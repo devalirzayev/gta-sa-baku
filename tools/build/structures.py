@@ -71,9 +71,90 @@ def trench_footprint(g):
     return polys
 
 
+class _VisualOnly:
+    """MeshBuilder proxy: geometry without collision (the coarse collision is added separately)."""
+
+    def __init__(self, mb):
+        self.mb = mb
+
+    def add(self, *a, **k):
+        k["collide"] = False
+        self.mb.add(*a, **k)
+
+
+def _col_walls(mb, P, z_bot, z_top, segs, surface):
+    V, T = [], []
+    for k0, k1 in segs:
+        q = np.array([[*P[k0], z_bot[k0]], [*P[k1], z_bot[k1]], [*P[k1], z_top[k1]], [*P[k0], z_top[k0]]])
+        T.append(np.array([[0, 1, 2], [0, 2, 3], [0, 2, 1], [0, 3, 2]]) + 4 * len(V))
+        V.append(q)
+    if V:
+        mb.add_col(np.vstack(V), np.vstack(T), surface)
+
+
+def structure_collision(mb, e, c, n, hw, zg, ztop, lf, inside):
+    """Coarse collision for one structure span: decimated deck / road surface, parapet and trench
+    walls (double-sided), ramp side walls and piers.  CCollision::ProcessColModels keeps at most
+    600 triangles touching a vehicle's bounding sphere (Collision.cpp), so this stays coarse."""
+    from tools.build.ground import _decimate
+    keep = _decimate(np.c_[c, ztop], inside, tol=0.1, max_len=12.0)
+    segs = [(int(a), int(b)) for a, b in zip(keep, keep[1:]) if inside[a:b].all()]
+    if not segs:
+        return
+    L = c + n * hw
+    R = c - n * hw
+    V, T = [], []
+    for k0, k1 in segs:
+        q = np.array([[*R[k0], ztop[k0]], [*R[k1], ztop[k1]], [*L[k1], ztop[k1]], [*L[k0], ztop[k0]]])
+        T.append(np.array([[0, 1, 2], [0, 2, 3]]) + 4 * len(V))
+        V.append(q)
+    mb.add_col(np.vstack(V), np.vstack(T), SURF["TARMAC"])
+    conc = SURF["PAVEMENT"]
+    if lf.max() > LIFT_EPS:
+        for side in (+1, -1):
+            inner = c + n * hw * side
+            _col_walls(mb, inner, ztop, ztop + PARAPET_H, segs, conc)
+            ramp = [(a, b) for a, b in segs if lf[a] <= VIADUCT_MIN and lf[b] <= VIADUCT_MIN]
+            outer = c + n * (hw + PARAPET_W) * side
+            _col_walls(mb, outer, zg - 0.6, ztop + PARAPET_H, ramp, conc)
+        via = lf > VIADUCT_MIN
+        s = profiles.arclen(c)
+        next_s = s[0] + PIER_STEP / 2
+        for k in range(len(c) - 1):
+            if s[k] >= next_s and via[k] and inside[k]:
+                t = np.array([n[k][1], -n[k][0]])
+                hwp = min(hw * 0.55, 6.0)
+                cc = [c[k] + n[k] * hwp + t, c[k] - n[k] * hwp + t, c[k] - n[k] * hwp - t, c[k] + n[k] * hwp - t]
+                P = np.array(cc + cc[:1])
+                zb = np.full(5, zg[k] - 0.5)
+                zt = np.full(5, ztop[k] - DECK_T)
+                _col_walls(mb, P, zb, zt, [(i, i + 1) for i in range(4)], conc)
+                next_s = s[k] + PIER_STEP
+    else:
+        cov = (np.abs(lf) >= TUNNEL_H - 0.2) & bool(e.tunnel)
+        top = np.where(cov, ztop + TUNNEL_H, zg + PARAPET_H)
+        for side in (+1, -1):
+            inner = c + n * hw * side
+            _col_walls(mb, inner, ztop, top, segs, conc)
+            outer = c + n * (hw + PARAPET_W) * side
+            opn = [(a, b) for a, b in segs if not cov[a] and not cov[b]]
+            _col_walls(mb, outer, zg - 0.2, zg + PARAPET_H, opn, conc)
+        covs = [(a, b) for a, b in segs if cov[a] and cov[b]]
+        if covs:
+            V, T = [], []
+            zc = ztop + TUNNEL_H
+            for k0, k1 in covs:
+                q = np.array([[*R[k0], zc[k0]], [*R[k1], zc[k1]], [*L[k1], zc[k1]], [*L[k0], zc[k0]]])
+                T.append(np.array([[0, 2, 1], [0, 3, 2]]) + 4 * len(V))
+                V.append(q)
+            mb.add_col(np.vstack(V), np.vstack(T), conc)
+
+
 def build_structures_tile(W, box, mb, road_tex):
     g = W.g
     x0, y0, x1, y1 = box.bounds
+    mb_col = mb
+    mb = _VisualOnly(mb)
     for e in g.edges.values():
         if not e.major:
             continue
@@ -105,6 +186,7 @@ def build_structures_tile(W, box, mb, road_tex):
                 _deck(mb, c, n, hw, zg, ztop, lf, inside)
             else:
                 _trench(mb, c, n, hw, zg, ztop, lf, inside, e.tunnel)
+            structure_collision(mb_col, e, c, n, hw, zg, ztop, lf, inside)
 
 
 def _quads_between(mb, mat, P, z_bot, z_top, sel, face_left, shade, surface, uscale=4.0, vscale=4.0):

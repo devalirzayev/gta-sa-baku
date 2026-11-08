@@ -30,6 +30,7 @@ from tools.rw.col import SURF
 from tools.tex import landmark_tex as LT
 
 LANDMARK_SCALE = 0.75
+COARSE = False            # True while building the low-detail collision version of a landmark
 LM_TXD = "bk_lmtx"
 LM_BASE = 15100
 SUN = np.array([-0.45, -0.55, 0.70]) / np.linalg.norm([-0.45, -0.55, 0.70])
@@ -171,6 +172,8 @@ def _extrude(mb, poly, z0, z1, wall_mat, roof_mat, uscale=8.0, vscale=8.0, night
 
 def _dome(mb, c, r, z0, h, mat, n=32, m=10, pointed=0.0, night_rgb=None):
     """Dome over a circle (c, r) at z0, height h; pointed > 0 gives an onion/ogee tip."""
+    if COARSE:
+        n, m = max(8, n // 4), max(3, m // 3)
     rings, zs = [], []
     for k in range(m + 1):
         t = k / m
@@ -185,6 +188,8 @@ def _dome(mb, c, r, z0, h, mat, n=32, m=10, pointed=0.0, night_rgb=None):
 
 
 def _cylinder(mb, c, r, z0, z1, mat, n=20, cap=True, vscale=6.0, uscale=4.0):
+    if COARSE:
+        n = max(6, n // 3)
     ring = np.c_[c[0] + r * np.cos(np.linspace(0, 2 * math.pi, n, endpoint=False)),
                  c[1] + r * np.sin(np.linspace(0, 2 * math.pi, n, endpoint=False))]
     _loft(mb, [ring, ring], [z0, z1], mat, uscale, vscale, cap=cap, centre_xy=c)
@@ -207,7 +212,7 @@ def build_hac(W, poly):
     z0 = _ground_z(W, poly) + ground.KERB
     loc = shapely.transform(poly, lambda p: p - c)
     mb = MeshBuilder()
-    P, Tr = triangulate_area(loc, 2.0)
+    P, Tr = triangulate_area(loc.simplify(1.0) if COARSE else loc, 8.0 if COARSE else 2.0)
     ext = loc.exterior
     d = shapely.distance(shapely.points(P), ext)
     E = np.asarray(ext.coords)
@@ -282,7 +287,7 @@ def build_flame(W, polys, podium):
     heights = [182.0, 165.0, 160.0]
     for poly, H_real, cen in zip(polys, heights, cents):
         H = H_real * LANDMARK_SCALE
-        ring0 = _resample_ring(np.asarray(poly.exterior.coords) - trio, 56)
+        ring0 = _resample_ring(np.asarray(poly.exterior.coords) - trio, 16 if COARSE else 56)
         if not shapely.LinearRing(ring0).is_ccw:
             ring0 = ring0[::-1]
         c0 = cen - trio
@@ -290,7 +295,7 @@ def build_flame(W, polys, podium):
         # distance from centroid to the footprint edge towards the trio centre
         reach = float(np.max(((ring0 - c0) @ inward)))
         rings, zs = [], []
-        K = 44
+        K = 12 if COARSE else 44
         for k in range(K + 1):
             t = k / K
             s = 1.0 if t < 0.18 else max(0.0, 1 - ((t - 0.18) / 0.82) ** 2.0) ** 0.75
@@ -367,20 +372,29 @@ SPECS = [  # key, model name, lod name
 
 
 def build_all(W, out_dir, verbose=True):
+    global COARSE
     fp = load_footprints()
     mins = minaret_points()
-    built = {}
-    built["hac"] = build_hac(W, fp["hac"])
-    built["flame"] = build_flame(W, [fp["flame1"], fp["flame2"], fp["flame3"]], fp.get("podium"))
     near = mins[np.hypot(*(mins - np.array(fp["mosque"].centroid.coords[0])).T) < 60] if len(mins) else mins
-    built["mosque"] = build_mosque(W, fp["mosque"], fp.get("mosque_c"), near)
-    built["maiden"] = build_maiden(W, fp["maiden"])
+
+    def build_set():
+        return {"hac": build_hac(W, fp["hac"]),
+                "flame": build_flame(W, [fp["flame1"], fp["flame2"], fp["flame3"]], fp.get("podium")),
+                "mosque": build_mosque(W, fp["mosque"], fp.get("mosque_c"), near),
+                "maiden": build_maiden(W, fp["maiden"])}
+    built = build_set()
+    COARSE = True                 # low-detail twins for the collision models (600-triangle limit)
+    try:
+        coarse = build_set()
+    finally:
+        COARSE = False
     os.makedirs(out_dir, exist_ok=True)
     meta = []
     for i, (key, name, lname) in enumerate(SPECS):
         mb, origin = built[key]
         # builders work in xy relative to the instance position, z absolute
-        geo, (cV, cT, cS, cL) = mb.build((0.0, 0.0, origin[2]))
+        geo, _ = mb.build((0.0, 0.0, origin[2]))
+        _, (cV, cT, cS, cL) = coarse[key][0].build((0.0, 0.0, origin[2]))
         V = np.asarray(geo.vertices, float)
         hd_id, lod_id = LM_BASE + 2 * i, LM_BASE + 2 * i + 1
         open(os.path.join(out_dir, name + ".dff"), "wb").write(DFF.write_dff(name, geo))

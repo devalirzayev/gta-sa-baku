@@ -298,17 +298,27 @@ def tile_box(ix, iy):
     return shapely.box(x0, y0, x0 + TILE, y0 + TILE)
 
 
+COL_GRID = 18.0          # collision triangulation grid (coarse: CCollision::ProcessColModels keeps at
+COL_SIMPLIFY = 0.35      # most 600 triangles touching a vehicle's bounding sphere, Collision.cpp)
+
+
 def add_area(mb, W, geom, mat, z_off=KERB, grid=8.0, under_water=False):
     P, Tr = triangulate_area(geom, grid)
     if len(Tr) == 0:
         return
-    z = H_at(W, P[:, 0], P[:, 1]) + (0.0 if under_water else z_off)
+    dz = 0.0 if under_water else z_off
+    z = H_at(W, P[:, 0], P[:, 1]) + dz
     S = GROUND_MATS[mat][0]
     UV = np.c_[P[:, 0] / S, -P[:, 1] / S]
     sh = shade_terrain(W, P[:, 0], P[:, 1])
     if under_water:
         sh = sh * 0.8
-    mb.add(mat, np.c_[P, z], UV, Tr, shade=sh, surface=GROUND_MATS[mat][1])
+    mb.add(mat, np.c_[P, z], UV, Tr, shade=sh, collide=False)
+    # collision: same area, simplified outline, coarse grid
+    g2 = geom.simplify(COL_SIMPLIFY, preserve_topology=True)
+    P2, T2 = triangulate_area(g2 if not g2.is_empty else geom, max(COL_GRID, grid * 2))
+    if len(T2):
+        mb.add_col(np.c_[P2, H_at(W, P2[:, 0], P2[:, 1]) + dz], T2, GROUND_MATS[mat][1])
 
 
 _SPATIAL = {}
@@ -360,11 +370,12 @@ def _cover_index(W):
     return _SPATIAL[k]
 
 
-def add_kerbs(mb, W, road_t, box):
-    """Vertical kerb faces along the boundary of the ground road area (facing the road)."""
+def _kerb_segments(road_t, box, seg_len, simplify):
+    """Segments (A, B, interior_left) along the boundary of the road area inside box."""
     bx0, by0, bx1, by1 = box.bounds
     A, B, LEFT = [], [], []
-    for poly in getattr(road_t, "geoms", [road_t]):
+    geom = road_t.simplify(simplify, preserve_topology=True) if simplify > 0 else road_t
+    for poly in getattr(geom, "geoms", [geom]):
         if poly.is_empty or poly.geom_type != "Polygon":
             continue
         rings = [poly.exterior] + list(poly.interiors)
@@ -384,16 +395,21 @@ def add_kerbs(mb, W, road_t, box):
             L = np.hypot(*(b - a).T)
             sel &= L > 0.05
             for i in np.nonzero(sel)[0]:
-                nseg = max(1, int(math.ceil(L[i] / 4.0)))
+                nseg = max(1, int(math.ceil(L[i] / seg_len)))
                 t = np.linspace(0, 1, nseg + 1)
                 P = a[i] + (b[i] - a[i]) * t[:, None]
                 A.append(P[:-1]); B.append(P[1:]); LEFT.append(np.full(nseg, interior_left))
     if not A:
-        return
-    A = np.vstack(A); B = np.vstack(B); LEFT = np.concatenate(LEFT)
-    za = H_at(W, A[:, 0], A[:, 1]); zb = H_at(W, B[:, 0], B[:, 1])
-    # road surface next to the kerb: ribbons use their own (flat) profile, which can lie below or
-    # above the terrain membrane at the road edge.  The kerb wall spans both levels (no cracks).
+        return None
+    return np.vstack(A), np.vstack(B), np.concatenate(LEFT)
+
+
+def _kerb_levels(W, A, B):
+    """Bottom/top heights of the kerb wall at both segment ends.  Ribbons use their own flat
+    profile, which can lie below or above the terrain membrane at the road edge: the wall spans
+    both levels so there are no cracks."""
+    za = H_at(W, A[:, 0], A[:, 1])
+    zb = H_at(W, B[:, 0], B[:, 1])
     tree, rz = _road_z_index(W)
     da, ia = tree.query(A)
     db, ib = tree.query(B)
@@ -403,6 +419,20 @@ def add_kerbs(mb, W, road_t, box):
     bot_b = np.minimum(zb, zrb) - 0.08
     top_a = np.maximum(za + KERB, zra + 0.02)
     top_b = np.maximum(zb + KERB, zrb + 0.02)
+    road_above = (zra > za + KERB) | (zrb > zb + KERB)
+    return bot_a, bot_b, top_a, top_b, road_above
+
+
+def add_kerbs(mb, W, road_t, box):
+    """Vertical kerb faces along the boundary of the ground road area (facing the road).
+    Visual: fine outline, 4-unit segments, back faces only where the road lies above the pavement.
+    Collision: simplified outline, 10-unit segments, single-sided (CCollision keeps at most 600
+    triangles touching a vehicle, so the collision mesh must stay coarse)."""
+    seg = _kerb_segments(road_t, box, 4.0, 0.05)
+    if seg is None:
+        return
+    A, B, LEFT = seg
+    bot_a, bot_b, top_a, top_b, road_above = _kerb_levels(W, A, B)
     n = len(A)
     V = np.zeros((n, 4, 3))
     V[:, 0, :2] = A; V[:, 0, 2] = bot_a
@@ -418,10 +448,67 @@ def add_kerbs(mb, W, road_t, box):
     Tl = np.array([[0, 2, 1], [0, 3, 2]])
     Tr = np.array([[0, 1, 2], [0, 2, 3]])
     T = np.where(LEFT[:, None, None], Tl[None], Tr[None]) + base[:, :, None]
-    # front (towards the road) and back faces: the wall is visible from both sides where the road
-    # lies above the pavement
-    T2 = np.concatenate([T.reshape(-1, 3), T.reshape(-1, 3)[:, [0, 2, 1]]])
-    mb.add("bk_curb", V.reshape(-1, 3), UV.reshape(-1, 2), T2, shade=0.85, surface=SURF["PAVEMENT"])
+    back = T[road_above].reshape(-1, 3)[:, [0, 2, 1]]
+    T2 = np.concatenate([T.reshape(-1, 3), back])
+    mb.add("bk_curb", V.reshape(-1, 3), UV.reshape(-1, 2), T2, shade=0.85, collide=False)
+    seg = _kerb_segments(road_t, box, 10.0, 0.4)
+    if seg is None:
+        return
+    A, B, LEFT = seg
+    bot_a, bot_b, top_a, top_b, _ = _kerb_levels(W, A, B)
+    n = len(A)
+    V = np.zeros((n, 4, 3))
+    V[:, 0, :2] = A; V[:, 0, 2] = bot_a
+    V[:, 1, :2] = B; V[:, 1, 2] = bot_b
+    V[:, 2, :2] = B; V[:, 2, 2] = top_b
+    V[:, 3, :2] = A; V[:, 3, 2] = top_a
+    base = (np.arange(n) * 4)[:, None]
+    T = np.where(LEFT[:, None, None], Tl[None], Tr[None]) + base[:, :, None]
+    mb.add_col(V.reshape(-1, 3), T.reshape(-1, 3), SURF["PAVEMENT"])
+
+
+def _decimate(p3, sel, tol=0.04, max_len=15.0):
+    """Indices of a centre line (x, y, z) to keep: Douglas-Peucker in 3-D plus a maximum segment
+    length; the ends of every selected run are always kept (tile / structure boundaries)."""
+    n = len(p3)
+    keep = {0, n - 1}
+    for i in range(1, n):
+        if bool(sel[i - 1]) != bool(sel[min(i, len(sel) - 1)]):
+            keep.add(i)
+
+    def rec(a, b):
+        if b <= a + 1:
+            return
+        P, Q = p3[a], p3[b]
+        d = Q - P
+        L = float(np.linalg.norm(d))
+        seg = p3[a + 1:b]
+        if L < 1e-6:
+            dist = np.linalg.norm(seg - P, axis=1)
+        else:
+            dist = np.linalg.norm(np.cross(seg - P, d / L), axis=1)
+        i = int(np.argmax(dist))
+        if dist[i] > tol:
+            keep.add(a + 1 + i)
+            rec(a, a + 1 + i)
+            rec(a + 1 + i, b)
+
+    ks = sorted(keep)
+    for a, b in zip(ks, ks[1:]):
+        rec(a, b)
+    ks = sorted(keep)
+    s = np.r_[0, np.cumsum(np.linalg.norm(np.diff(p3[:, :2], axis=0), axis=1))]
+    out = [ks[0]]
+    for j in ks[1:]:
+        while s[j] - s[out[-1]] > max_len:
+            t = s[out[-1]] + max_len
+            m = int(np.searchsorted(s, t))
+            m = min(max(m, out[-1] + 1), j)
+            if m == j:
+                break
+            out.append(m)
+        out.append(j)
+    return np.array(out)
 
 
 def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:
@@ -444,25 +531,42 @@ def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:
         a, b = r.side_lines()
         tex = ROAD_TEX.get((e.lanes_f, e.lanes_b), "bk_asph")
         width = r.left + r.right
-        V, UV, Tq = strip(a, b, z, z, s_c / max(width, 6.0))
         k = np.arange(len(c) - 1)
         qc = (c[k] + c[k + 1]) / 2
         inside = (qc[:, 0] >= cx0) & (qc[:, 0] < cx1) & (qc[:, 1] >= cy0) & (qc[:, 1] < cy1)
         sel = inside & (lf[k] <= 0.3) & (lf[k + 1] <= 0.3)
         if not sel.any():
             continue
-        mb.add(tex, V, UV, Tq[np.r_[sel, sel]], shade=shade_terrain(W, V[:, 0], V[:, 1]), surface=SURF["TARMAC"])
+        # drop centre-line vertices where the strip stays straight and flat (visual + collision)
+        keep = _decimate(np.c_[c, z], sel, tol=0.04, max_len=15.0)
+        c2, a2, b2, z2, s2 = c[keep], a[keep], b[keep], z[keep], s_c[keep]
+        k2 = np.arange(len(keep) - 1)
+        sel2 = np.array([sel[keep[i]:keep[i + 1]].all() for i in k2]) if len(k2) else np.zeros(0, bool)
+        if not sel2.any():
+            continue
+        V, UV, Tq = strip(a2, b2, z2, z2, s2 / max(width, 6.0))
+        mb.add(tex, V, UV, Tq[np.r_[sel2, sel2]], shade=shade_terrain(W, V[:, 0], V[:, 1]), collide=False)
+        keepc = _decimate(np.c_[c, z], sel, tol=0.08, max_len=24.0)
+        k3 = np.arange(len(keepc) - 1)
+        sel3 = np.array([sel[keepc[i]:keepc[i + 1]].all() for i in k3]) if len(k3) else np.zeros(0, bool)
+        if sel3.any():
+            Vc, _, Tc = strip(a[keepc], b[keepc], z[keepc], z[keepc], s_c[keepc])
+            mb.add_col(Vc, Tc[np.r_[sel3, sel3]], SURF["TARMAC"])
     # ---- junction polygons ----
     for j in lay.junctions.values():
         if not j.polygon.intersects(box):
             continue
         part = j.polygon.intersection(box)
-        P, Tr = triangulate_area(part, 6.0)
+        P, Tr = triangulate_area(part, 8.0)
         if len(Tr):
             z = H_at(W, P[:, 0], P[:, 1])
             S = GROUND_MATS["bk_asph"][0]
             mb.add("bk_asph", np.c_[P, z], np.c_[P[:, 0] / S, -P[:, 1] / S], Tr,
-                   shade=shade_terrain(W, P[:, 0], P[:, 1]), surface=SURF["TARMAC"])
+                   shade=shade_terrain(W, P[:, 0], P[:, 1]), collide=False)
+            g2 = part.simplify(COL_SIMPLIFY, preserve_topology=True)
+            P2, T2 = triangulate_area(g2 if not g2.is_empty else part, COL_GRID)
+            if len(T2):
+                mb.add_col(np.c_[P2, H_at(W, P2[:, 0], P2[:, 1])], T2, SURF["TARMAC"])
     # ---- structures (bridges, ramps, trenches, tunnels) ----
     build_structures_tile(W, box, mb, ROAD_TEX)
     # ---- clipped areas ----
@@ -472,15 +576,15 @@ def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:
     taken = road_t.union(trench_t) if not trench_t.is_empty else road_t
     sw = spatial(W, "sw_parts").clip(boxb).difference(taken).intersection(box)
     if not sw.is_empty:
-        add_area(mb, W, sw, "bk_pave", grid=6.0)
+        add_area(mb, W, sw, "bk_pave", grid=8.0)
     taken = taken.union(sw)
     mn = spatial(W, "minor_parts").clip(boxb).difference(taken).intersection(box)
     if not mn.is_empty:
-        add_area(mb, W, mn, "bk_asph2", grid=6.0)
+        add_area(mb, W, mn, "bk_asph2", grid=8.0)
     taken = taken.union(mn)
     pa = spatial(W, "path_parts").clip(boxb).difference(taken).intersection(box)
     if not pa.is_empty:
-        add_area(mb, W, pa, "bk_path", grid=6.0)
+        add_area(mb, W, pa, "bk_path", grid=8.0)
     taken = taken.union(pa)
     # ---- land cover & default terrain ----
     rest = box.difference(taken)
@@ -489,11 +593,11 @@ def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:
     if not water.is_empty:
         under = rest.intersection(water)
         if not under.is_empty:
-            add_area(mb, W, under, "bk_seabed", under_water=True, grid=10.0)
+            add_area(mb, W, under, "bk_seabed", under_water=True, grid=14.0)
         rest = rest.difference(water)
         beach = rest.intersection(water.buffer(9.0)) if not sea.intersection(boxb).is_empty else shapely.Polygon()
         if not beach.is_empty:
-            add_area(mb, W, beach, "bk_sand", grid=6.0)
+            add_area(mb, W, beach, "bk_sand", grid=8.0)
             rest = rest.difference(beach)
     tree = _cover_index(W)
     hits = sorted(tree.query(box, predicate="intersects"), reverse=True)
@@ -504,10 +608,10 @@ def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:
         part = rest.intersection(poly)
         if part.is_empty or part.area < 1.0:
             continue
-        add_area(mb, W, part, mat)
+        add_area(mb, W, part, mat, grid=11.0)
         rest = rest.difference(poly)
     if not rest.is_empty and rest.area > 0.5:
-        add_area(mb, W, rest, "bk_soil")
+        add_area(mb, W, rest, "bk_soil", grid=11.0)
     return mb
 
 

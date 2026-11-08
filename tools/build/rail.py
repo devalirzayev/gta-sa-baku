@@ -158,12 +158,22 @@ def build_tiles(W, lines, road_parts, verbose=True):
                 top = np.array([[*(a + na * BALLAST_TOP), za + 0.30], [*(a - na * BALLAST_TOP), za + 0.30],
                                 [*(b - nb * BALLAST_TOP), zb + 0.30], [*(b + nb * BALLAST_TOP), zb + 0.30]])
                 uv = np.array([[0, -s[i] / 2.4], [1, -s[i] / 2.4], [1, -s[i + 1] / 2.4], [0, -s[i + 1] / 2.4]])
-                mb.add("bk_rl_ballast", top, uv, _up(top), shade=0.95, surface=SURF["GRAVEL"])
+                mb.add("bk_rl_ballast", top, uv, _up(top), shade=0.95, collide=False)
                 for side in (1, -1):
                     sd = np.array([[*(a + na * side * BALLAST_TOP), za + 0.30], [*(b + nb * side * BALLAST_TOP), zb + 0.30],
                                    [*(b + nb * side * BALLAST_BOT), zb - 0.08], [*(a + na * side * BALLAST_BOT), za - 0.08]])
                     uvs = np.array([[s[i], 0], [s[i + 1], 0], [s[i + 1], 0.25], [s[i], 0.25]])   # continuous: welds
-                    mb.add("bk_rl_gravel", sd, uvs, _up(sd), shade=0.85, surface=SURF["GRAVEL"])
+                    mb.add("bk_rl_gravel", sd, uvs, _up(sd), shade=0.85, collide=False)
+                # collision: the ballast top only, every second segment merged (yards have 20+
+                # parallel tracks; CCollision keeps at most 600 triangles per touching vehicle)
+                if i % 2 == 0:
+                    j = min(i + 2, len(p) - 1)
+                    if not (on_road[j] or on_road[min(i + 1, len(p) - 1)]):
+                        b2, nb2, zb2 = p[j], n[j], z[j]
+                        hw_c = (BALLAST_TOP + BALLAST_BOT) / 2       # mid-slope: no invisible ledge
+                        topc = np.array([[*(a + na * hw_c), za + 0.26], [*(a - na * hw_c), za + 0.26],
+                                         [*(b2 - nb2 * hw_c), zb2 + 0.26], [*(b2 + nb2 * hw_c), zb2 + 0.26]])
+                        mb.add_col(topc, _up(topc), SURF["GRAVEL"])
                 rz_a, rz_b = za + 0.30 + 0.17, zb + 0.30 + 0.17
             else:
                 rz_a, rz_b = za + 0.03, zb + 0.03          # level crossing: rails flush with the road

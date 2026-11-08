@@ -54,6 +54,16 @@ class MeshBuilder:
             lt = col.light_byte(15, 7) if light is None else light
             self.col.append((V, T, surface, lt))
 
+    def add_col(self, V, T, surface, light=None):
+        """Collision-only triangles (e.g. a coarser version of the visual mesh)."""
+        V = np.asarray(V, np.float64)
+        T = np.asarray(T, np.int64)
+        if len(T) == 0:
+            return
+        used, inv = np.unique(T.ravel(), return_inverse=True)
+        lt = col.light_byte(15, 7) if light is None else light
+        self.col.append((V[used], inv.reshape(-1, 3), surface, lt))
+
     def empty(self):
         return not self.parts
 
