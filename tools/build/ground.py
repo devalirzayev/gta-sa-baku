@@ -333,6 +333,25 @@ def _ribbon_index(W):
     return _SPATIAL[k]
 
 
+def _road_z_index(W):
+    """KD-tree over ground-level ribbon centre lines -> road surface height (flat cross sections)."""
+    k = (id(W), "road_z")
+    if k not in _SPATIAL:
+        P, Z = [], []
+        for r in W.lay.ribbons.values():
+            e = r.edge
+            c = r.center
+            s_full = profiles.arclen(e.pts)
+            s_c = r.s0 + profiles.arclen(c)
+            lf = np.interp(s_c, s_full, e.lift)
+            ok = np.abs(lf) <= 0.3
+            P.append(c[ok])
+            Z.append(np.interp(s_c, s_full, e.z)[ok])
+        P = np.vstack(P)
+        _SPATIAL[k] = (cKDTree(P), np.concatenate(Z))
+    return _SPATIAL[k]
+
+
 def _cover_index(W):
     k = (id(W), "cover")
     if k not in _SPATIAL:
@@ -373,21 +392,36 @@ def add_kerbs(mb, W, road_t, box):
         return
     A = np.vstack(A); B = np.vstack(B); LEFT = np.concatenate(LEFT)
     za = H_at(W, A[:, 0], A[:, 1]); zb = H_at(W, B[:, 0], B[:, 1])
+    # road surface next to the kerb: ribbons use their own (flat) profile, which can lie below or
+    # above the terrain membrane at the road edge.  The kerb wall spans both levels (no cracks).
+    tree, rz = _road_z_index(W)
+    da, ia = tree.query(A)
+    db, ib = tree.query(B)
+    zra = np.where(da < 30, rz[ia], za)
+    zrb = np.where(db < 30, rz[ib], zb)
+    bot_a = np.minimum(za, zra) - 0.08
+    bot_b = np.minimum(zb, zrb) - 0.08
+    top_a = np.maximum(za + KERB, zra + 0.02)
+    top_b = np.maximum(zb + KERB, zrb + 0.02)
     n = len(A)
     V = np.zeros((n, 4, 3))
-    V[:, 0, :2] = A; V[:, 0, 2] = za - 0.05
-    V[:, 1, :2] = B; V[:, 1, 2] = zb - 0.05
-    V[:, 2, :2] = B; V[:, 2, 2] = zb + KERB
-    V[:, 3, :2] = A; V[:, 3, 2] = za + KERB
+    V[:, 0, :2] = A; V[:, 0, 2] = bot_a
+    V[:, 1, :2] = B; V[:, 1, 2] = bot_b
+    V[:, 2, :2] = B; V[:, 2, 2] = top_b
+    V[:, 3, :2] = A; V[:, 3, 2] = top_a
     L = np.hypot(*(B - A).T)
     UV = np.zeros((n, 4, 2))
     UV[:, 1, 0] = UV[:, 2, 0] = L / 4.0
-    UV[:, 2, 1] = UV[:, 3, 1] = -KERB / 0.6
+    UV[:, 0, 1] = (top_a - bot_a) / 0.6
+    UV[:, 1, 1] = (top_b - bot_b) / 0.6
     base = (np.arange(n) * 4)[:, None]
     Tl = np.array([[0, 2, 1], [0, 3, 2]])
     Tr = np.array([[0, 1, 2], [0, 2, 3]])
     T = np.where(LEFT[:, None, None], Tl[None], Tr[None]) + base[:, :, None]
-    mb.add("bk_curb", V.reshape(-1, 3), UV.reshape(-1, 2), T.reshape(-1, 3), shade=0.85, surface=SURF["PAVEMENT"])
+    # front (towards the road) and back faces: the wall is visible from both sides where the road
+    # lies above the pavement
+    T2 = np.concatenate([T.reshape(-1, 3), T.reshape(-1, 3)[:, [0, 2, 1]]])
+    mb.add("bk_curb", V.reshape(-1, 3), UV.reshape(-1, 2), T2, shade=0.85, surface=SURF["PAVEMENT"])
 
 
 def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:

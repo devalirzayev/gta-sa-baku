@@ -769,10 +769,17 @@ def place_all(W, blds, lights, verbose=True):
     out += b
     if verbose:
         print("bus stops + bins:", len(b))
+    from tools.build import signs
+    bs = signs.bus_stop_signs(ctx, b)
+    out += bs
     lp = lamps(ctx)
     out += lp
     if verbose:
         print("street lamps:", len(lp))
+    rs = signs.road_sign_candidates(ctx, lights)
+    out += rs
+    if verbose:
+        print("road signs:", len(rs) + len(bs))
     pf = park_furniture(ctx)
     out += pf
     if verbose:
@@ -787,6 +794,8 @@ def place_all(W, blds, lights, verbose=True):
     for p in keep:
         for k in ("prio", "rank", "r"):
             p.pop(k, None)
+    # OSM crossings on major roads (edge id, arc position) for the zebra markings (signtiles.py)
+    place_all.crossings = [(r.edge.id, float(s)) for r, s in getattr(ctx, "crossings", [])]
     return keep
 
 
@@ -807,4 +816,5 @@ if __name__ == "__main__":
     lights = json.load(open("build/out/paths/lights.json"))
     props = place_all(W, blds, lights)
     pickle.dump(props, open("data/cache/props.pkl", "wb"))
+    pickle.dump(place_all.crossings, open("data/cache/crossings.pkl", "wb"))
     print("props:", len(props), stats(props), f"{time.time() - t0:.0f}s")

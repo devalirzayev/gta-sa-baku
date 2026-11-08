@@ -29,6 +29,7 @@ from tools.rw import img, col, txd, dff
 DIST = "dist"
 MODDIR = os.path.join(DIST, "Baku_SA")
 GROUND = "build/out/ground"
+SIGNS = "build/out/signs"
 CELL = 500.0
 NC = int(2 * WORLD / CELL)      # 12 x 12 stream cells
 
@@ -153,13 +154,24 @@ def main():
     # ---------------------------------------------------------------- props (lamps, lights, trees, ...)
     props = pickle.load(open("data/cache/props.pkl", "rb")) if os.path.exists("data/cache/props.pkl") else []
     keep_ide = {p.upper() for p in KEEP_IDE}
+    sg = json.load(open(os.path.join(SIGNS, "signs.json"))) if os.path.exists(os.path.join(SIGNS, "signs.json")) \
+        else {"road_signs": [], "tiles": []}
+    sign_ids = {r["id"] for r in sg["road_signs"]}
     for p in props:
-        r = mrow[p["id"]]
-        assert str(r.ide_file).upper() in keep_ide, (p["id"], r.ide_file)   # defined by a kept vanilla IDE
+        if p["id"] not in sign_ids:
+            r = mrow[p["id"]]
+            assert str(r.ide_file).upper() in keep_ide, (p["id"], r.ide_file)   # defined by a kept vanilla IDE
         cx = min(NC - 1, max(0, int((p["x"] + WORLD) // CELL)))
         cy = min(NC - 1, max(0, int((p["y"] + WORLD) // CELL)))
         stream_insts[cell_name[(cx, cy)][1]].append(IPL.Inst(p["id"], p["name"], p["x"], p["y"], p["z"], p["heading"]))
     manifest["props"] = {k: sum(1 for p in props if p["kind"] == k) for k in sorted({p["kind"] for p in props})}
+    # merged signage tiles (shop boards, street plates, zebra crossings): static, one per ground tile
+    for t in sg["tiles"]:
+        ox, oy, oz = t["origin"]
+        cx = min(NC - 1, max(0, int((ox + WORLD) // CELL)))
+        cy = min(NC - 1, max(0, int((oy + WORLD) // CELL)))
+        stream_insts[cell_name[(cx, cy)][1]].append(IPL.Inst(t["id"], t["name"], ox, oy, oz, 0.0))
+    manifest["sign_tiles"] = len(sg["tiles"])
     # text IPLs: ground (baku.ipl) + one per vanilla group name
     text_ipls = ["baku"]
     with open(os.path.join(maps, "baku.ipl"), "w", newline="") as f:
@@ -187,8 +199,13 @@ def main():
         objs.append(IPL.ObjDef(t["id"], t["name"], ids.GROUND_TXD, 299, 0))
     for L in lods:
         objs.append(IPL.ObjDef(L["id"], L["name"], L["txd"], 2900, 0))
+    for r in sg["road_signs"]:
+        objs.append(IPL.ObjDef(r["id"], r["name"], r["txd"], r["dd"], 0))
+    for t in sg["tiles"]:
+        objs.append(IPL.ObjDef(t["id"], t["name"], t["txd"], t["dd"], 0))
     with open(os.path.join(maps, "baku.ide"), "w", newline="") as f:
-        f.write(IPL.ide_text(objs, comment="Baku map - custom models (ground tiles, ground LODs)"))
+        f.write(IPL.ide_text(objs, comment="Baku map - custom models (ground tiles, ground LODs, road signs, "
+                                           "shop boards / street plates / zebra crossings per tile)"))
     sa_ids = set(usage.keys()) | {b["lod_id"] for b in blds if b["lod_id"] and id(b) in lod_set}
     sa_objs = []
     for mid in sorted(sa_ids):
@@ -221,17 +238,31 @@ def main():
         ox, oy, _ = L["origin"]
         key = (int((ox + WORLD) // COL_REGION), int((oy + WORLD) // COL_REGION))
         lod_cols[key].append(col.write_col3(col.ColModel(L["name"], L["id"], bounds=(V.min(0), V.max(0)))))
-    keys = sorted(set(regions) | set(lod_cols))
-    assert len(keys) <= len(free), (len(keys), len(free))
+    # signage tiles: bounds-only entries in their region file as well
+    sg_cols = defaultdict(list)
+    for t in sg["tiles"]:
+        ox, oy, _ = t["origin"]
+        key = (int((ox + WORLD) // COL_REGION), int((oy + WORLD) // COL_REGION))
+        sg_cols[key].append((t["name"], open(os.path.join(SIGNS, t["name"] + ".col"), "rb").read()))
+    keys = sorted(set(regions) | set(lod_cols) | set(sg_cols))
+    assert len(keys) + 1 <= len(free), (len(keys), len(free))
     for k, key in enumerate(keys):
         cname = free[k]
         blob = b"".join(open(os.path.join(GROUND, t["name"] + ".col"), "rb").read() for t in regions.get(key, []))
         blob += b"".join(lod_cols.get(key, []))
+        blob += b"".join(c for _, c in sg_cols.get(key, []))
         with open(os.path.join(out_img, cname), "wb") as f:
             f.write(blob)
         manifest["cols"][cname] = [t["name"] for t in regions.get(key, [])] + \
             [f"(bounds) {L['name']}" for L in lods
-             if (int((L['origin'][0] + WORLD) // COL_REGION), int((L['origin'][1] + WORLD) // COL_REGION)) == key]
+             if (int((L['origin'][0] + WORLD) // COL_REGION), int((L['origin'][1] + WORLD) // COL_REGION)) == key] + \
+            [f"(bounds) {n}" for n, _ in sg_cols.get(key, [])]
+    # road sign types (used all over the map) in one dedicated col file
+    if sg["road_signs"]:
+        cname = free[len(keys)]
+        with open(os.path.join(out_img, cname), "wb") as f:
+            f.write(b"".join(open(os.path.join(SIGNS, r["name"] + ".col"), "rb").read() for r in sg["road_signs"]))
+        manifest["cols"][cname] = [r["name"] for r in sg["road_signs"]]
 
     # ---------------------------------------------------------------- baku.img
     files = []
@@ -241,6 +272,13 @@ def main():
         files.append((L["name"] + ".dff", open(os.path.join(GROUND, L["name"] + ".dff"), "rb").read()))
         files.append((L["txd"] + ".txd", open(os.path.join(GROUND, L["txd"] + ".txd"), "rb").read()))
     files.append((ids.GROUND_TXD + ".txd", open(os.path.join(GROUND, ids.GROUND_TXD + ".txd"), "rb").read()))
+    for r in sg["road_signs"]:
+        files.append((r["name"] + ".dff", open(os.path.join(SIGNS, r["name"] + ".dff"), "rb").read()))
+    if sg["road_signs"]:
+        files.append((sg["road_signs"][0]["txd"] + ".txd", open(os.path.join(SIGNS, sg["road_signs"][0]["txd"] + ".txd"), "rb").read()))
+    for t in sg["tiles"]:
+        files.append((t["name"] + ".dff", open(os.path.join(SIGNS, t["name"] + ".dff"), "rb").read()))
+        files.append((t["txd"] + ".txd", open(os.path.join(SIGNS, t["txd"] + ".txd"), "rb").read()))
     os.makedirs(os.path.join(out_files, "models"), exist_ok=True)
     img.write_img(os.path.join(out_files, "models", "baku.img"), files)
 
@@ -285,6 +323,8 @@ def main():
         with open(os.path.join(out_img, name), "wb") as f:
             f.write(data)
     manifest["gta3img"] = sorted(os.listdir(out_img))
+    if os.path.exists(os.path.join(SIGNS, "object_dat_add.txt")):
+        shutil.copy(os.path.join(SIGNS, "object_dat_add.txt"), os.path.join(MODDIR, "text", "object_dat_add.txt"))
     for fn in ("install.ps1", "baku_install.py"):
         shutil.copy(os.path.join("tools", "install", fn), os.path.join(MODDIR, "installer", fn))
     for fn in ("INSTALL.bat", "UNINSTALL.bat", "README_AZ.txt", "README_EN.txt"):

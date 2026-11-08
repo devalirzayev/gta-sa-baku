@@ -20,7 +20,7 @@ const texCache = {};
 function tex(name){
   if(!texCache[name]){
     const t = loader.load('tex/'+name+'.png');
-    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.flipY = false;  // DFF UVs are D3D (v = 0 at the top)
     t.anisotropy = 8; texCache[name]=t;
   }
   return texCache[name];

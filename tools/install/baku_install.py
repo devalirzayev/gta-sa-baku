@@ -11,7 +11,10 @@ What install does (everything is backed up into <game>\\baku_backup first):
   2. patches models\\gta3.img: every file in gta3img\\ (stream IPLs, COL, nodes*.dat, radar*.txd)
      is appended to the end of the archive and the directory entry with the same name is
      pointed to it (the original data stays untouched inside the file);
-  3. adds the Azerbaijani district names to text\\american.gxt (key BKZ000...).
+  3. adds the Azerbaijani district names to text\\american.gxt (key BKZ000...);
+  4. inserts the Baku road-sign lines (text\\object_dat_add.txt) into data\\object.dat, before
+     its '*' end marker, so the signs are breakable like the vanilla ones;
+  5. moves a stale models\\cinfo.bin (collision cache, normally absent on PC) into the backup.
 uninstall restores every backed-up file, the original gta3.img directory and its length.
 The PowerShell installer (install.ps1) implements exactly the same steps.
 """
@@ -175,6 +178,27 @@ def install(game):
         with open(gxt, "wb") as f:
             f.write(build_gxt(tables))
         state["gxt"].append(lang)
+    # 4. object.dat: breakable road signs
+    add = os.path.join(MOD, "text", "object_dat_add.txt")
+    od = find_ci(game, "data/object.dat")
+    state["object_dat"] = False
+    if os.path.isfile(add) and os.path.isfile(od):
+        shutil.copy2(od, os.path.join(bdir, "object.dat"))
+        state["object_dat"] = True
+        with open(os.path.join(bdir, "installed.json"), "w") as f:
+            json.dump(state, f, indent=1)
+        lines = open(od, "rb").read().decode("latin-1").splitlines()
+        new = [l for l in open(add, "rb").read().decode("latin-1").splitlines() if l.strip()]
+        end = next((i for i, l in enumerate(lines) if l.lstrip().startswith("*")), len(lines))
+        lines = lines[:end] + new + lines[end:]
+        with open(od, "wb") as f:
+            f.write(("\r\n".join(lines) + "\r\n").encode("latin-1"))
+    # 5. collision cache
+    ci = find_ci(game, "models/cinfo.bin")
+    state["cinfo"] = False
+    if os.path.isfile(ci):
+        shutil.move(ci, os.path.join(bdir, "cinfo.bin"))
+        state["cinfo"] = True
     with open(os.path.join(bdir, "installed.json"), "w") as f:
         json.dump(state, f, indent=1)
     print("Baku installed.")
@@ -203,6 +227,10 @@ def uninstall(game):
             os.remove(p)
     for lang in state.get("gxt") or []:
         shutil.copy2(os.path.join(bdir, f"{lang}.gxt"), find_ci(game, f"text/{lang}.gxt"))
+    if state.get("object_dat") and os.path.isfile(os.path.join(bdir, "object.dat")):
+        shutil.copy2(os.path.join(bdir, "object.dat"), find_ci(game, "data/object.dat"))
+    if state.get("cinfo") and os.path.isfile(os.path.join(bdir, "cinfo.bin")):
+        shutil.move(os.path.join(bdir, "cinfo.bin"), find_ci(game, "models/cinfo.bin"))
     baku_maps = find_ci(game, "data/maps/baku")
     if os.path.isdir(baku_maps) and not os.listdir(baku_maps):
         os.rmdir(baku_maps)

@@ -5,6 +5,8 @@
 #   2. patches models\gta3.img (appends replacement files, repoints directory entries)
 #   3. copies the mod files into the game folder
 #   4. adds the district names to text\*.gxt
+#   5. inserts the road-sign lines (text\object_dat_add.txt) into data\object.dat before its '*' end marker
+#   6. moves a stale models\cinfo.bin (collision cache) into the backup
 param(
     [string]$Game = "",
     [switch]$Uninstall
@@ -125,6 +127,13 @@ if ($Uninstall) {
     foreach ($rel in $st.backed_up) { $b = Join-Path (Join-Path $Bdir "files") $rel; if (Test-Path $b) { Copy-Item $b (Join-Path $Game $rel) -Force } }
     foreach ($rel in $st.copied) { $p = Join-Path $Game $rel; if (Test-Path $p) { Remove-Item $p -Force } }
     foreach ($lang in $st.gxt) { $b = Join-Path $Bdir "$lang.gxt"; if (Test-Path $b) { Copy-Item $b (Join-Path $Game "text\$lang.gxt") -Force } }
+    $names = @($st.PSObject.Properties.Name)
+    if (($names -contains "object_dat") -and $st.object_dat) {
+        $b = Join-Path $Bdir "object.dat"; if (Test-Path $b) { Copy-Item $b (Join-Path $Game "data\object.dat") -Force }
+    }
+    if (($names -contains "cinfo") -and $st.cinfo) {
+        $b = Join-Path $Bdir "cinfo.bin"; if (Test-Path $b) { Move-Item $b (Join-Path $Game "models\cinfo.bin") -Force }
+    }
     $bm = Join-Path $Game "data\maps\baku"
     if ((Test-Path $bm) -and -not (Get-ChildItem $bm)) { Remove-Item $bm }
     Remove-Item $Bdir -Recurse -Force
@@ -222,6 +231,27 @@ foreach ($lang in @("american", "french", "german", "italian", "spanish")) {
     [IO.File]::WriteAllBytes($g, (Build-Gxt $tables))
 }
 
-$inst.gxt = $patched; $inst.phase = "done"; Save-State $inst
+$inst.gxt = $patched; $inst.phase = "objectdat"; Save-State $inst
+
+# breakable road signs: insert our lines into data\object.dat before the '*' end marker
+$inst["object_dat"] = $false; $inst["cinfo"] = $false
+$add = Join-Path $Mod "text\object_dat_add.txt"
+$od = Join-Path $Game "data\object.dat"
+if ((Test-Path $add) -and (Test-Path $od)) {
+    Copy-Item $od (Join-Path $Bdir "object.dat") -Force
+    $inst["object_dat"] = $true; Save-State $inst
+    $latin = [Text.Encoding]::GetEncoding(28591)
+    $lines = [Collections.Generic.List[string]]::new()
+    foreach ($l in ($latin.GetString([IO.File]::ReadAllBytes($od)) -split "\r?\n")) { $lines.Add($l) }
+    while ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq "") { $lines.RemoveAt($lines.Count - 1) }
+    $new = @(($latin.GetString([IO.File]::ReadAllBytes($add)) -split "\r?\n") | Where-Object { $_.Trim() -ne "" })
+    $end = $lines.Count
+    for ($k = 0; $k -lt $lines.Count; $k++) { if ($lines[$k].TrimStart().StartsWith("*")) { $end = $k; break } }
+    $lines.InsertRange($end, [string[]]$new)
+    [IO.File]::WriteAllBytes($od, $latin.GetBytes(($lines -join "`r`n") + "`r`n"))
+}
+$ci = Join-Path $Game "models\cinfo.bin"
+if (Test-Path $ci) { Move-Item $ci (Join-Path $Bdir "cinfo.bin") -Force; $inst["cinfo"] = $true }
+$inst.phase = "done"; Save-State $inst
 Say "Baku ugurla quruldu! Oyunu acib 'Yeni oyun' secin." "Baku installed! Start the game and choose 'New Game'."
 if ($missing.Count -gt 0) { Write-Warning ("gta3.img-de tapilmayan qeydler / entries not found: " + ($missing -join ", ")) }

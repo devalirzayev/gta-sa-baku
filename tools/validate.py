@@ -180,6 +180,17 @@ def main(dist="dist/Baku_SA"):
     n_text = sum(len(v) for v in text_inst.values())
     dyn_ids = {int(r.id) for r in models.itertuples()
                if isinstance(r.engine_refs, str) and "object.dat" in r.engine_refs}
+    # our own breakable models (lines the installer inserts into data/object.dat)
+    od = os.path.join(dist, "text", "object_dat_add.txt")
+    if os.path.exists(od):
+        by_name = {nm.lower(): mid for mid, (nm, *_r) in defs.items()}
+        for line in open(od):
+            if line.strip() and not line.startswith(";"):
+                nm = line.split(",")[0].strip().lower()
+                if nm not in by_name:
+                    err(f"object_dat_add.txt: {nm} is not defined in our IDEs")
+                else:
+                    dyn_ids.add(by_name[nm])
     n_text_dyn = sum(1 for v in text_inst.values() for i in v if i.model_id in dyn_ids)
     stream_counts = {}
     CELL, NC = 500.0, 12
