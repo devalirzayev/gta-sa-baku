@@ -144,6 +144,33 @@ def build_lod(W, lx, ly, roofs=None):
     return name, data, tname, tdata, origin
 
 
+def lod_roofs():
+    """Building roofs, landmark footprints and rail tracks painted into the far LOD textures, so the
+    city keeps its texture when the small HD buildings have faded out."""
+    import pickle
+    out = []
+    rng = np.random.default_rng(12)
+    if os.path.exists("data/cache/buildings.pkl"):
+        blds, _ = pickle.load(open("data/cache/buildings.pkl", "rb"))
+        for b in blds:
+            g = int(rng.integers(-14, 15))
+            base = (122, 116, 110) if b.get("style") not in ("industrial/warehouse", "garage") else (138, 136, 132)
+            out.append((b["poly"], tuple(int(c + g) for c in base)))
+    lmj = "build/out/landmarks/landmarks.json"
+    if os.path.exists(lmj):
+        col = {"hac": (236, 236, 232), "flame1": (150, 176, 204), "flame2": (150, 176, 204), "flame3": (150, 176, 204),
+               "podium": (110, 120, 130), "mosque": (214, 200, 168), "mosque_c": (112, 140, 160), "maiden": (200, 182, 146)}
+        for k, w in json.load(open(lmj))["footprints"].items():
+            out.append((shapely.from_wkt(w), col.get(k, (150, 150, 150))))
+    try:
+        from tools.build import rail
+        for c in rail.corridors(half=1.7):
+            out.append((c, MAT_RGB["rail"]))
+    except Exception:          # pragma: no cover
+        pass
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs", type=int, default=4)
@@ -169,9 +196,10 @@ def main():
                 done += 1
                 if done % 24 == 0 or done == len(jobs):
                     print(f"  tiles {done}/{len(jobs)}  {round(time.time() - t0)} s", flush=True)
+    roofs = lod_roofs()
     for lx in range(ids.NL):
         for ly in range(ids.NL):
-            name, data, tname, tdata, origin = build_lod(W, lx, ly)
+            name, data, tname, tdata, origin = build_lod(W, lx, ly, roofs=roofs)
             with open(os.path.join(OUT, name + ".dff"), "wb") as f:
                 f.write(data)
             with open(os.path.join(OUT, tname + ".txd"), "wb") as f:

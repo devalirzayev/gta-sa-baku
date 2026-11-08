@@ -157,7 +157,10 @@ def make_scm(W, spawn=None):
     pol = [snap_to_sidewalk(W, x, y) + (0.0,) for x, y in pol]
     if spawn is None:
         sx, sy, sz = snap_to_sidewalk(W, 1480.0, -175.0)
-        spawn = (sx, sy, sz, 45.0)
+        # face the Heydar Aliyev Centre (ped heading: 0 = north, counter-clockwise, degrees)
+        tx, ty = 1569.0, -126.0
+        heading = math.degrees(math.atan2(-(tx - sx), ty - sy)) % 360.0
+        spawn = (sx, sy, sz, heading)
     data = SCM.build_freeroam_scm(spawn, hosp, pol, weather=0, hour=13, money=25000,
                                   extras=[("SWITCH_RANDOM_TRAINS", 0)], max_wanted_level=6)
     return data, spawn, hosp, pol
@@ -179,6 +182,13 @@ def radar_image(W, buildings=None, size=1536):
             td.polygon(b["poly"], (122, 116, 108), clip=False)
     world = shapely.box(-WORLD, -WORLD, WORLD, WORLD)
     td.polygon(ground.spatial(W, "minor_parts").clip(world), (176, 172, 164), clip=False)
+    # railway tracks (dark grey with sleepers look at radar scale)
+    try:
+        from tools.build import rail
+        for line in rail.rail_lines():
+            td.line(np.asarray(line.coords), (92, 86, 80), 6.0)
+    except Exception:          # pragma: no cover - rails are optional scenery
+        pass
     for e in sorted(W.g.edges.values(), key=lambda e: e.lanes_f + e.lanes_b):
         if not e.major:
             continue

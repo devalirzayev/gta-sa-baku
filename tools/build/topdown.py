@@ -37,10 +37,26 @@ class TopDown:
             geom = geom.intersection(self.box.buffer(2))
         for p in getattr(geom, "geoms", [geom]):
             if p.geom_type == "Polygon" and not p.is_empty:
-                self.dr.polygon(self._px(p.exterior.coords), fill=tuple(color))
+                if not p.interiors:
+                    self.dr.polygon(self._px(p.exterior.coords), fill=tuple(color))
+                    continue
+                # polygon with holes: paint through a mask so whatever lies under the holes
+                # (e.g. the city blocks inside a road network) stays visible
+                ext = self._px(p.exterior.coords)
+                xs = [q[0] for q in ext]
+                ys = [q[1] for q in ext]
+                x0 = max(0, int(min(xs)) - 1)
+                y0 = max(0, int(min(ys)) - 1)
+                x1 = min(self.img.size[0], int(max(xs)) + 2)
+                y1 = min(self.img.size[1], int(max(ys)) + 2)
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                m = Image.new("L", (x1 - x0, y1 - y0), 0)
+                md = ImageDraw.Draw(m)
+                md.polygon([(x - x0, y - y0) for x, y in ext], fill=255)
                 for h in p.interiors:
-                    # holes are drawn by the caller's ordering; fill with bg-agnostic approach: skip
-                    pass
+                    md.polygon([(x - x0, y - y0) for x, y in self._px(h.coords)], fill=0)
+                self.img.paste(tuple(color), (x0, y0, x1, y1), m)
             elif p.geom_type in ("MultiPolygon", "GeometryCollection"):
                 self.polygon(p, color, clip=False)
 

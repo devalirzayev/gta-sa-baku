@@ -51,7 +51,8 @@ def _obb_axis(poly):
 
 def candidates(W, blds, props, exclude=None, seed=3):
     rng = np.random.default_rng(seed)
-    road_tree = shapely.STRtree([p for p in W.road_parts if not p.is_empty])          # major roads only
+    from tools.build import rail
+    road_tree = shapely.STRtree([p for p in list(W.road_parts) + rail.corridors(half=2.8) if not p.is_empty])  # major roads + tracks
     bld_tree = shapely.STRtree([b["poly"] for b in blds if b.get("poly") is not None])
     sea, lakes = W.water_polys
     water = [g for g in getattr(sea, "geoms", [sea]) if not g.is_empty] + [p for p, _ in lakes]

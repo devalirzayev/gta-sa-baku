@@ -128,7 +128,8 @@ class Placer:
         self.out = []
         self.usage = Counter()
         self.recent = {}
-        blockers = list(W.road_parts) + list(W.sw_parts) + list(W.trench_parts or [])
+        from tools.build import rail
+        blockers = list(W.road_parts) + list(W.sw_parts) + list(W.trench_parts or []) + rail.corridors(half=2.8)
         sea, lakes = W.water_polys
         blockers += list(getattr(sea, "geoms", [sea])) + [p for p, _ in lakes]
         # elevated road decks are not blockers for buildings below? keep them as blockers

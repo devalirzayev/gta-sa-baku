@@ -31,6 +31,7 @@ MODDIR = os.path.join(DIST, "Baku_SA")
 GROUND = "build/out/ground"
 SIGNS = "build/out/signs"
 LANDMARKS = "build/out/landmarks"
+RAIL = "build/out/rail"
 CELL = 500.0
 NC = int(2 * WORLD / CELL)      # 12 x 12 stream cells
 
@@ -191,6 +192,13 @@ def main():
         group_lods[grp].append(IPL.Inst(m["lod_id"], m["lod_name"], ox, oy, oz, 0.0))
         stream_insts[sname].append(IPL.Inst(m["id"], m["name"], ox, oy, oz, 0.0, lod=len(group_lods[grp]) - 1))
     manifest["landmarks"] = [m["name"] for m in lmk["models"]]
+    rl = json.load(open(os.path.join(RAIL, "rail.json"))) if os.path.exists(os.path.join(RAIL, "rail.json")) else {"tiles": []}
+    for t in rl["tiles"]:
+        ox, oy, oz = t["origin"]
+        cx = min(NC - 1, max(0, int((ox + WORLD) // CELL)))
+        cy = min(NC - 1, max(0, int((oy + WORLD) // CELL)))
+        stream_insts[cell_name[(cx, cy)][1]].append(IPL.Inst(t["id"], t["name"], ox, oy, oz, 0.0))
+    manifest["rail_tiles"] = len(rl["tiles"])
     # text IPLs: ground (baku.ipl) + one per vanilla group name
     text_ipls = ["baku"]
     with open(os.path.join(maps, "baku.ipl"), "w", newline="") as f:
@@ -233,6 +241,8 @@ def main():
     for m in lmk["models"]:
         objs.append(IPL.ObjDef(m["id"], m["name"], m["txd"], 299, 0))
         objs.append(IPL.ObjDef(m["lod_id"], m["lod_name"], m["txd"], 1800, 0))
+    for t in rl["tiles"]:
+        objs.append(IPL.ObjDef(t["id"], t["name"], t["txd"], t["dd"], 0))
     with open(os.path.join(maps, "baku.ide"), "w", newline="") as f:
         f.write(IPL.ide_text(objs, comment="Baku map - custom models (ground tiles, ground LODs, road signs, "
                                            "shop boards / street plates / zebra crossings per tile)"))
@@ -279,6 +289,10 @@ def main():
         key = (int((ox + WORLD) // COL_REGION), int((oy + WORLD) // COL_REGION))
         for nm in (m["name"], m["lod_name"]):
             sg_cols[key].append((nm, open(os.path.join(LANDMARKS, nm + ".col"), "rb").read()))
+    for t in rl["tiles"]:
+        ox, oy, _ = t["origin"]
+        key = (int((ox + WORLD) // COL_REGION), int((oy + WORLD) // COL_REGION))
+        sg_cols[key].append((t["name"], open(os.path.join(RAIL, t["name"] + ".col"), "rb").read()))
     keys = sorted(set(regions) | set(lod_cols) | set(sg_cols))
     assert len(keys) + 1 <= len(free), (len(keys), len(free))
     for k, key in enumerate(keys):
@@ -317,6 +331,10 @@ def main():
     for m in lmk["models"]:
         for nm in (m["name"], m["lod_name"]):
             files.append((nm + ".dff", open(os.path.join(LANDMARKS, nm + ".dff"), "rb").read()))
+    for t in rl["tiles"]:
+        files.append((t["name"] + ".dff", open(os.path.join(RAIL, t["name"] + ".dff"), "rb").read()))
+    if rl["tiles"]:
+        files.append((rl["tiles"][0]["txd"] + ".txd", open(os.path.join(RAIL, rl["tiles"][0]["txd"] + ".txd"), "rb").read()))
     if lmk["models"]:
         tx = lmk["models"][0]["txd"]
         files.append((tx + ".txd", open(os.path.join(LANDMARKS, tx + ".txd"), "rb").read()))
@@ -358,7 +376,7 @@ def main():
     with open(os.path.join(dd, "gta.dat"), "w", newline="") as f:
         f.write(gta_dat(text_ipls))
     # radar
-    radar = BD.radar_image(W, blds)
+    radar = BD.radar_image(W, blds + [{"poly": shapely.from_wkt(w)} for w in lmk["footprints"].values()])
     radar.save(os.path.join(DIST, "radar_full.png"))
     for name, data in RD.build_radar_txds(RD.split_radar_image(radar, 128)):
         with open(os.path.join(out_img, name), "wb") as f:

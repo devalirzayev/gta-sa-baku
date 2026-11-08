@@ -131,7 +131,9 @@ class Ctx:
         self.W = W
         self.M = Models()
         self.rng = np.random.default_rng(RNG_SEED)
-        self.road_parts = [p for p in W.road_parts + W.minor_parts if p is not None and not p.is_empty]
+        from tools.build import rail
+        self.road_parts = [p for p in W.road_parts + W.minor_parts + rail.corridors(half=2.6)
+                           if p is not None and not p.is_empty]
         self.road_tree = shapely.STRtree(self.road_parts)
         self.path_parts = [p for p in (W.path_parts or []) if not p.is_empty]
         self.path_tree = shapely.STRtree(self.path_parts) if self.path_parts else None
