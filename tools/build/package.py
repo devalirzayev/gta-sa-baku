@@ -110,20 +110,21 @@ def main():
             p = os.path.join(GROUND, ids.tile_name(ix, iy) + ".json")
             if os.path.exists(p):
                 tiles.append(json.load(open(p)))
-    lods = [json.load(open(os.path.join(GROUND, ids.lod_name(lx, ly) + ".json")))
-            for lx in range(ids.NL) for ly in range(ids.NL)]
+    # one LOD per HD tile (a LOD must have exactly one child, see ids.py)
+    lods = []
+    for t in tiles:
+        ix, iy = int(t["name"][4:6]), int(t["name"][6:8])
+        lods.append(json.load(open(os.path.join(GROUND, ids.lod_name(ix, iy) + ".json"))))
     ground_insts = []
     lod_index = {}
     for k, L in enumerate(lods):
         ox, oy, oz = L["origin"]
         ground_insts.append(IPL.Inst(L["id"], L["name"], ox, oy, oz))
         lod_index[L["name"]] = k
-    per = ground.NT // ids.NL
     for t in tiles:
         ix, iy = int(t["name"][4:6]), int(t["name"][6:8])
-        lname = ids.lod_name(ix // per, iy // per)
         ox, oy, oz = t["origin"]
-        ground_insts.append(IPL.Inst(t["id"], t["name"], ox, oy, oz, lod=lod_index[lname]))
+        ground_insts.append(IPL.Inst(t["id"], t["name"], ox, oy, oz, lod=lod_index[ids.lod_name(ix, iy)]))
 
     # ---------------------------------------------------------------- buildings -> cells
     blds, usage = pickle.load(open("data/cache/buildings.pkl", "rb"))
@@ -319,7 +320,8 @@ def main():
         files.append((t["name"] + ".dff", open(os.path.join(GROUND, t["name"] + ".dff"), "rb").read()))
     for L in lods:
         files.append((L["name"] + ".dff", open(os.path.join(GROUND, L["name"] + ".dff"), "rb").read()))
-        files.append((L["txd"] + ".txd", open(os.path.join(GROUND, L["txd"] + ".txd"), "rb").read()))
+    for tname in sorted({L["txd"] for L in lods}):          # shared by 2 x 2 LOD tiles
+        files.append((tname + ".txd", open(os.path.join(GROUND, tname + ".txd"), "rb").read()))
     files.append((ids.GROUND_TXD + ".txd", open(os.path.join(GROUND, ids.GROUND_TXD + ".txd"), "rb").read()))
     for r in sg["road_signs"]:
         files.append((r["name"] + ".dff", open(os.path.join(SIGNS, r["name"] + ".dff"), "rb").read()))
@@ -363,8 +365,9 @@ def main():
     with open(os.path.join(MODDIR, "text", "zone_texts.json"), "w", encoding="utf-8") as f:
         json.dump({k: ZN.encode_sa(v).hex() for k, v in texts.items()}, f, indent=1)
     manifest["zone_texts"] = texts
+    # CTrain::InitTrains reads data\paths\tracks*.dat (Train.cpp) - dummy loops far outside the world
     for name, text in TR.no_train_files().items():
-        with open(os.path.join(dd, name), "w", newline="") as f:
+        with open(os.path.join(dd, "paths", name), "w", newline="") as f:
             f.write(text)
     scm, spawn, hosp, pol = BD.make_scm(W)
     os.makedirs(os.path.join(dd, "script"), exist_ok=True)
@@ -382,6 +385,10 @@ def main():
         with open(os.path.join(out_img, name), "wb") as f:
             f.write(data)
     manifest["gta3img"] = sorted(os.listdir(out_img))
+    # kept vanilla interior IPLs whose enex sections the installer removes (SA-coordinate markers)
+    with open(os.path.join(MODDIR, "text", "strip_enex.txt"), "w", newline="\r\n") as f:
+        for ipl_path in KEEP_IPL:
+            f.write(ipl_path.replace("\\", "/").lower() + "\n")
     if os.path.exists(os.path.join(SIGNS, "object_dat_add.txt")):
         shutil.copy(os.path.join(SIGNS, "object_dat_add.txt"), os.path.join(MODDIR, "text", "object_dat_add.txt"))
     for fn in ("install.ps1", "baku_install.py"):

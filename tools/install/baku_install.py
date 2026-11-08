@@ -14,7 +14,11 @@ What install does (everything is backed up into <game>\\baku_backup first):
   3. adds the Azerbaijani district names to text\\american.gxt (key BKZ000...);
   4. inserts the Baku road-sign lines (text\\object_dat_add.txt) into data\\object.dat, before
      its '*' end marker, so the signs are breakable like the vanilla ones;
-  5. moves a stale models\\cinfo.bin (collision cache, normally absent on PC) into the backup.
+  5. moves a stale models\\cinfo.bin (collision cache, normally absent on PC) into the backup;
+  6. removes the 'enex' (entrance/exit marker) sections from the vanilla interior IPLs that stay
+     loaded (text\\strip_enex.txt): their outside ends are San Andreas coordinates, i.e. random
+     spots in Baku.
+Nothing is changed when a gta3.img entry the mod replaces is missing (non-standard game copy).
 uninstall restores every backed-up file, the original gta3.img directory and its length.
 The PowerShell installer (install.ps1) implements exactly the same steps.
 """
@@ -101,6 +105,27 @@ def build_gxt(tables):
     return head + b"TABL" + struct.pack("<I", 12 * len(tables)) + bytes(tabl) + bytes(body)
 
 
+def strip_enex(raw):
+    """IPL text without the lines inside 'enex' ... 'end' (section markers kept)."""
+    lines = raw.decode("latin-1").splitlines()
+    out, skip, changed = [], False, False
+    for line in lines:
+        t = line.strip().lower()
+        if skip:
+            if t == "end":
+                skip = False
+                out.append(line)
+            else:
+                changed = True
+            continue
+        out.append(line)
+        if t == "enex":
+            skip = True
+    if not changed:
+        return raw
+    return ("\r\n".join(out) + "\r\n").encode("latin-1")
+
+
 def install(game):
     game = os.path.abspath(game)
     img_path = find_ci(game, "models/gta3.img")
@@ -109,6 +134,14 @@ def install(game):
     bdir = os.path.join(game, BACKUP)
     if os.path.exists(os.path.join(bdir, "installed.json")):
         raise SystemExit("Baku is already installed (baku_backup\\installed.json exists). Uninstall first.")
+    # every replaced gta3.img entry must exist, otherwise e.g. a missing .col would leave models
+    # without collision (crash in CWorld::Add) -> check before changing anything
+    head, d, n = read_dir(img_path)
+    have = {d[32 * i + 8:32 * i + 32].split(b"\0")[0].decode("latin-1").lower() for i in range(n)}
+    missing = sorted(fn for fn in os.listdir(os.path.join(MOD, "gta3img")) if fn.lower() not in have)
+    if missing:
+        raise SystemExit("gta3.img does not contain these entries (not an original GTA San Andreas 1.0 copy?), "
+                         "nothing was changed: " + ", ".join(missing[:30]))
     os.makedirs(bdir, exist_ok=True)
     state = {"copied": [], "backed_up": [], "img_size": os.path.getsize(img_path), "gxt": None}
     # 1. gta3.img directory backup + patch
@@ -193,6 +226,25 @@ def install(game):
         lines = lines[:end] + new + lines[end:]
         with open(od, "wb") as f:
             f.write(("\r\n".join(lines) + "\r\n").encode("latin-1"))
+    # 6 (before 5 for the state file). interior IPLs: drop the enex sections
+    state["enex"] = []
+    lst = os.path.join(MOD, "text", "strip_enex.txt")
+    if os.path.isfile(lst):
+        os.makedirs(os.path.join(bdir, "enex"), exist_ok=True)
+        for rel in [l.strip() for l in open(lst, encoding="utf-8") if l.strip()]:
+            path = find_ci(game, rel)
+            if not os.path.isfile(path):
+                continue
+            raw = open(path, "rb").read()
+            new = strip_enex(raw)
+            if new == raw:
+                continue
+            shutil.copy2(path, os.path.join(bdir, "enex", os.path.basename(path)))
+            state["enex"].append(rel)
+            with open(os.path.join(bdir, "installed.json"), "w") as f:
+                json.dump(state, f, indent=1)
+            with open(path, "wb") as f:
+                f.write(new)
     # 5. collision cache
     ci = find_ci(game, "models/cinfo.bin")
     state["cinfo"] = False
@@ -229,6 +281,10 @@ def uninstall(game):
         shutil.copy2(os.path.join(bdir, f"{lang}.gxt"), find_ci(game, f"text/{lang}.gxt"))
     if state.get("object_dat") and os.path.isfile(os.path.join(bdir, "object.dat")):
         shutil.copy2(os.path.join(bdir, "object.dat"), find_ci(game, "data/object.dat"))
+    for rel in state.get("enex") or []:
+        b = os.path.join(bdir, "enex", os.path.basename(find_ci(game, rel)))
+        if os.path.isfile(b):
+            shutil.copy2(b, find_ci(game, rel))
     if state.get("cinfo") and os.path.isfile(os.path.join(bdir, "cinfo.bin")):
         shutil.move(os.path.join(bdir, "cinfo.bin"), find_ci(game, "models/cinfo.bin"))
     baku_maps = find_ci(game, "data/maps/baku")

@@ -105,17 +105,22 @@ def lod_texture(W, lx, ly, size=256, roofs=None):
     return td.result(noise=3.0, seed=lx * 100 + ly)
 
 
-def lod_mesh(W, lx, ly, step=20.0):
-    L = 6000 / ids.NL
-    x0 = -WORLD + lx * L
-    y0 = -WORLD + ly * L
-    n = int(L / step)
+def lod_mesh(W, ix, iy, step=20.0):
+    """Height-field grid over HD tile (ix, iy); UVs address the tile's quarter of the shared
+    500-unit LOD texture of its 2 x 2 block."""
+    L = ground.TILE
+    x0 = -WORLD + ix * L
+    y0 = -WORLD + iy * L
+    LT = 6000 / ids.NL
+    tx0 = -WORLD + (ix // 2) * LT
+    ty0 = -WORLD + (iy // 2) * LT
+    n = int(round(L / step))
     xs = np.linspace(x0, x0 + L, n + 1)
     ys = np.linspace(y0, y0 + L, n + 1)
     X, Y = np.meshgrid(xs, ys)
     Z = ground.H_at(W, X.ravel(), Y.ravel()).reshape(X.shape)
     V = np.c_[X.ravel(), Y.ravel(), Z.ravel()]
-    UV = np.c_[(X.ravel() - x0) / L, 1 - (Y.ravel() - y0) / L]
+    UV = np.c_[(X.ravel() - tx0) / LT, 1 - (Y.ravel() - ty0) / LT]
     T = []
     for j in range(n):
         for i in range(n):
@@ -126,22 +131,21 @@ def lod_mesh(W, lx, ly, step=20.0):
     return V, UV, T
 
 
-def build_lod(W, lx, ly, roofs=None):
-    name = ids.lod_name(lx, ly)
-    tname = ids.lod_txd(lx, ly)
-    V, UV, T = lod_mesh(W, lx, ly)
-    L = 6000 / ids.NL
-    origin = (-WORLD + (lx + 0.5) * L, -WORLD + (ly + 0.5) * L, float(np.round(np.median(V[:, 2]))))
+def build_lod(W, ix, iy):
+    """LOD tile for HD tile (ix, iy) (geometry only; the texture is shared per 2 x 2 tiles)."""
+    name = ids.lod_name(ix, iy)
+    tname = ids.lod_txd(ix // 2, iy // 2)
+    V, UV, T = lod_mesh(W, ix, iy)
+    x0 = -WORLD + ix * ground.TILE
+    y0 = -WORLD + iy * ground.TILE
+    origin = (x0 + ground.TILE / 2, y0 + ground.TILE / 2, float(np.round(np.median(V[:, 2]))))
     mb = MeshBuilder()
     sh = ground.shade_terrain(W, V[:, 0], V[:, 1])
     mb.add(tname, V, UV, T, shade=sh, collide=False)
     geo, _ = mb.build(origin)
     for m in geo.materials:
         m.address_u = m.address_v = dff.ADDR_CLAMP
-    data = dff.write_dff(name, geo)
-    img = lod_texture(W, lx, ly, roofs=roofs)
-    tdata = txd.write_txd([(tname, img, "DXT1")])
-    return name, data, tname, tdata, origin
+    return name, dff.write_dff(name, geo), tname, origin
 
 
 def lod_roofs():
@@ -197,15 +201,21 @@ def main():
                 if done % 24 == 0 or done == len(jobs):
                     print(f"  tiles {done}/{len(jobs)}  {round(time.time() - t0)} s", flush=True)
     roofs = lod_roofs()
+    for f in os.listdir(OUT):                     # LOD layout changed over time: start clean
+        if f.startswith("bk_l") and not f.startswith("bk_lt"):
+            os.remove(os.path.join(OUT, f))
     for lx in range(ids.NL):
         for ly in range(ids.NL):
-            name, data, tname, tdata, origin = build_lod(W, lx, ly, roofs=roofs)
+            img = lod_texture(W, lx, ly, roofs=roofs)
+            with open(os.path.join(OUT, ids.lod_txd(lx, ly) + ".txd"), "wb") as f:
+                f.write(txd.write_txd([(ids.lod_txd(lx, ly), img, "DXT1")]))
+    for ix in range(ground.NT):
+        for iy in range(ground.NT):
+            name, data, tname, origin = build_lod(W, ix, iy)
             with open(os.path.join(OUT, name + ".dff"), "wb") as f:
                 f.write(data)
-            with open(os.path.join(OUT, tname + ".txd"), "wb") as f:
-                f.write(tdata)
             with open(os.path.join(OUT, name + ".json"), "w") as f:
-                json.dump({"name": name, "id": ids.lod_id(lx, ly), "origin": origin, "txd": tname}, f)
+                json.dump({"name": name, "id": ids.lod_id(ix, iy), "origin": origin, "txd": tname}, f)
     print("done", round(time.time() - t0, 1), "s")
 
 

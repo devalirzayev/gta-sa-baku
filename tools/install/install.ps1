@@ -7,6 +7,8 @@
 #   4. adds the district names to text\*.gxt
 #   5. inserts the road-sign lines (text\object_dat_add.txt) into data\object.dat before its '*' end marker
 #   6. moves a stale models\cinfo.bin (collision cache) into the backup
+#   7. removes the 'enex' sections from the kept vanilla interior IPLs (text\strip_enex.txt)
+# Nothing is changed when a gta3.img entry the mod replaces is missing (non-standard game copy).
 param(
     [string]$Game = "",
     [switch]$Uninstall
@@ -17,6 +19,20 @@ $Mod = Split-Path -Parent $Here
 $Sector = 2048
 
 function Say($az, $en) { Write-Host $az; Write-Host ("  " + $en) -ForegroundColor DarkGray }
+
+# <base>\<rel> with every component matched case-insensitively (game copies differ in case;
+# needed where the file system is case-sensitive)
+function Resolve-CI([string]$base, [string]$rel) {
+    $p = $base
+    foreach ($part in ($rel.Trim() -split '[\\/]')) {
+        if (-not $part) { continue }
+        $exact = Join-Path $p $part
+        if (Test-Path -LiteralPath $exact) { $p = $exact; continue }
+        $hit = Get-ChildItem -LiteralPath $p -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq $part } | Select-Object -First 1
+        if ($hit) { $p = $hit.FullName } else { $p = $exact }
+    }
+    return $p
+}
 
 if ($Game -eq "") {
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
@@ -131,6 +147,14 @@ if ($Uninstall) {
     if (($names -contains "object_dat") -and $st.object_dat) {
         $b = Join-Path $Bdir "object.dat"; if (Test-Path $b) { Copy-Item $b (Join-Path $Game "data\object.dat") -Force }
     }
+    if ($names -contains "enex") {
+        foreach ($rel in @($st.enex)) {
+            if (-not $rel) { continue }
+            $p = Resolve-CI $Game $rel
+            $b = Join-Path (Join-Path $Bdir "enex") (Split-Path -Leaf $p)
+            if (Test-Path $b) { Copy-Item $b $p -Force }
+        }
+    }
     if (($names -contains "cinfo") -and $st.cinfo) {
         $b = Join-Path $Bdir "cinfo.bin"; if (Test-Path $b) { Move-Item $b (Join-Path $Game "models\cinfo.bin") -Force }
     }
@@ -143,7 +167,6 @@ if ($Uninstall) {
 
 # ================================================================= install
 if (Test-Path $StatePath) { throw "Baku artiq qurulub / already installed. Evvelce UNINSTALL.bat ishledin." }
-New-Item -ItemType Directory -Force -Path $Bdir | Out-Null
 $imgSize = (Get-Item $Img).Length
 Say "gta3.img yamaqlanir..." "patching gta3.img..."
 $fs = [IO.File]::Open($Img, 'Open', 'ReadWrite')
@@ -153,6 +176,17 @@ if ([Text.Encoding]::ASCII.GetString($head, 0, 4) -ne "VER2") { $fs.Close(); thr
 $n = [BitConverter]::ToUInt32($head, 4)
 $dir = New-Object byte[] (32 * $n)
 [void]$fs.Read($dir, 0, $dir.Length)
+# every replaced entry must exist (a missing .col would leave models without collision -> crash)
+$have = @{}
+for ($i = 0; $i -lt $n; $i++) {
+    $have[[Text.Encoding]::GetEncoding(28591).GetString($dir, 32 * $i + 8, 24).Split([char]0)[0].ToLowerInvariant()] = 1
+}
+$absent = @(Get-ChildItem (Join-Path $Mod "gta3img") -File | Where-Object { -not $have.ContainsKey($_.Name.ToLowerInvariant()) } | ForEach-Object { $_.Name })
+if ($absent.Count -gt 0) {
+    $fs.Close()
+    throw ("gta3.img bu qeydleri saxlamir (orijinal 1.0 deyil?), hech ne deyishdirilmedi / entries missing, nothing changed: " + (($absent | Select-Object -First 30) -join ", "))
+}
+New-Item -ItemType Directory -Force -Path $Bdir | Out-Null
 $bk = New-Object byte[] (8 + $dir.Length)
 [Array]::Copy($head, 0, $bk, 0, 8); [Array]::Copy($dir, 0, $bk, 8, $dir.Length)
 [IO.File]::WriteAllBytes((Join-Path $Bdir "gta3img_directory.bin"), $bk)
@@ -252,6 +286,36 @@ if ((Test-Path $add) -and (Test-Path $od)) {
 }
 $ci = Join-Path $Game "models\cinfo.bin"
 if (Test-Path $ci) { Move-Item $ci (Join-Path $Bdir "cinfo.bin") -Force; $inst["cinfo"] = $true }
+Save-State $inst
+
+# interior IPLs: drop the enex (entrance/exit marker) sections - their outside ends are SA coordinates
+$inst["enex"] = @()
+$lst = Join-Path $Mod "text\strip_enex.txt"
+if (Test-Path $lst) {
+    $latin = [Text.Encoding]::GetEncoding(28591)
+    New-Item -ItemType Directory -Force -Path (Join-Path $Bdir "enex") | Out-Null
+    foreach ($rel in (Get-Content $lst | Where-Object { $_.Trim() -ne "" })) {
+        $path = Resolve-CI $Game $rel
+        if (-not (Test-Path $path)) { continue }
+        $lines = $latin.GetString([IO.File]::ReadAllBytes($path)) -split "\r?\n"
+        $out = New-Object System.Collections.Generic.List[string]
+        $skip = $false; $changed = $false
+        foreach ($l in $lines) {
+            $t = $l.Trim().ToLowerInvariant()
+            if ($skip) {
+                if ($t -eq "end") { $skip = $false; $out.Add($l) } else { $changed = $true }
+                continue
+            }
+            $out.Add($l)
+            if ($t -eq "enex") { $skip = $true }
+        }
+        if (-not $changed) { continue }
+        if ($out.Count -gt 0 -and $out[$out.Count - 1] -eq "") { $out.RemoveAt($out.Count - 1) }   # the final newline
+        Copy-Item $path (Join-Path (Join-Path $Bdir "enex") (Split-Path -Leaf $path)) -Force
+        $inst["enex"] = @($inst["enex"]) + @($rel.Trim()); Save-State $inst
+        [IO.File]::WriteAllBytes($path, $latin.GetBytes(($out -join "`r`n") + "`r`n"))
+    }
+}
 $inst.phase = "done"; Save-State $inst
 Say "Baku ugurla quruldu! Oyunu acib 'Yeni oyun' secin." "Baku installed! Start the game and choose 'New Game'."
 if ($missing.Count -gt 0) { Write-Warning ("gta3.img-de tapilmayan qeydler / entries not found: " + ($missing -join ", ")) }
