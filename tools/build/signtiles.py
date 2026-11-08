@@ -163,6 +163,8 @@ class Board:
     plate: bool = False      # street-name plate style
     cross: bool = False      # pharmacy cross
     px: float = 34.0         # texture pixels per unit
+    lines: list = None       # direction sign rows [(arrow 'L'|'S'|'R', text)]
+    pole_z: float = None     # free-standing board: pole from this ground height (+ back face)
     img: Image.Image = None
     uv: tuple = None
 
@@ -466,11 +468,154 @@ def collect_zebras(ctx, lights, crossings):
     return out
 
 
+SHORT = [("küçəsi", "küç."), ("prospekti", "pr."), ("şossesi", "şos."), ("meydanı", "meyd."), ("döngəsi", "dön."),
+         ("bulvarı", "bulv.")]
+CLASS_RANK = {"motorway": 5, "trunk": 5, "primary": 4, "secondary": 3, "tertiary": 2}
+
+
+def short_name(n):
+    n = clean_name(n)
+    for a, b in SHORT:
+        n = re.sub(a + r"\b", b, n)
+    return n
+
+
+def collect_direction_signs(ctx, lights, verbose=True):
+    """Blue direction signs (arrows + the names of the roads leaving the junction) on the
+    approaches of signalised junctions of main roads, 26 units before the junction."""
+    from scipy.spatial import cKDTree
+    W = ctx.W
+    lay = W.lay
+    g = W.g
+    nid = list(g.nodes.keys())
+    tree = cKDTree(np.array([g.nodes[n] for n in nid]))
+    out = []
+    done = set()
+    for L in lights:
+        J = np.array([L["jx"], L["jy"]])
+        O = np.array([L["ox"], L["oy"]])
+        d = J - O
+        d = d / max(np.hypot(*d), 1e-9)
+        dist, k = tree.query(J)
+        if dist > 1.0:
+            continue
+        node = nid[k]
+        jid = lay.node_junction.get(node)
+        if jid is None:
+            continue
+        key = (jid, int(round(math.degrees(math.atan2(d[1], d[0])) / 20.0)))
+        if key in done:
+            continue
+        j = lay.junctions[jid]
+        # approach arm: the ribbon arriving at this node against d
+        app = None
+        for eid, end in j.arms:
+            r = lay.ribbons.get(eid)
+            if r is None:
+                continue
+            e = r.edge
+            if (e.v if end == "v" else e.u) != node:
+                continue
+            c = r.center
+            t = (c[-1] - c[-2]) if end == "v" else (c[0] - c[1])
+            t = t / max(np.hypot(*t), 1e-9)
+            if float(t @ d) > 0.8:
+                app = (r, end, t)
+                break
+        if app is None:
+            continue
+        r, end, t = app
+        if r.edge.cls not in ("trunk", "primary", "secondary"):
+            continue
+        Lr = float(profiles.arclen(r.center)[-1])
+        if Lr < 45:
+            continue
+        exits = {}
+        for eid, e_end in j.arms:
+            rr = lay.ribbons.get(eid)
+            e = rr.edge if rr is not None else g.edges.get(eid)
+            if e is None or not e.name:
+                continue
+            if e.oneway and e_end == "v":
+                continue                             # traffic comes in here, cannot leave this way
+            pts = e.pts if e_end == "u" else e.pts[::-1]
+            a = pts[min(len(pts) - 1, 4)] - pts[0]
+            a = a / max(np.hypot(*a), 1e-9)
+            if float(a @ -d) > 0.75:
+                continue                             # back where we came from
+            th = math.atan2(d[0] * a[1] - d[1] * a[0], float(d @ a))
+            k2 = "S" if abs(th) < 0.6 else ("L" if th > 0 else "R")
+            score = CLASS_RANK.get(e.cls, 1) + 0.001 * e.length
+            if k2 not in exits or score > exits[k2][0]:
+                exits[k2] = (score, short_name(e.name))
+        rows = [(k2, exits[k2][1]) for k2 in ("L", "S", "R") if k2 in exits]
+        if len(rows) < 2 or len({n for _, n in rows}) < 2:
+            continue
+        # position: right verge, 26 units before the end of the approach ribbon
+        s_end = Lr if end == "v" else 0.0
+        s_at = s_end - 26.0 if end == "v" else 26.0
+        (pc,), (tt,) = _sample(r.center, [s_at])
+        nrm = np.array([-tt[1], tt[0]])
+        right = -nrm if end == "v" else nrm
+        half = r.right if end == "v" else r.left
+        placed = None
+        for extra in (1.1, 1.8, 2.6):
+            P = pc + right * (half + extra)
+            if not ctx.on_road(P[None])[0] and not ctx.in_building(P[None], 1.6)[0] and not ctx.in_water(P[None])[0]:
+                placed = P
+                break
+        if placed is None:
+            continue
+        done.add(key)
+        zg = ctx.ground_z(float(placed[0]), float(placed[1]))
+        h = 0.36 * len(rows) + 0.3
+        out.append(Board(" / ".join(n for _, n in rows), None, "direction", (16, 72, 160), (255, 255, 255),
+                         "Inter-Bold.otf", placed, -d, 3.9, h, zg + 2.35, px=64.0, lines=rows, pole_z=zg - 0.2))
+    if verbose:
+        print(f"direction signs: {len(out)}")
+    return out
+
+
 # ------------------------------------------------------------------------------- rendering
+def _render_direction(b: Board, wpx, hpx):
+    sc = 3
+    W_, H_ = wpx * sc, hpx * sc
+    im = Image.new("RGB", (W_, H_), b.bg)
+    d = ImageDraw.Draw(im)
+    d.rectangle([4 * sc, 4 * sc, W_ - 4 * sc - 1, H_ - 4 * sc - 1], outline=(255, 255, 255), width=2 * sc)
+    n = len(b.lines)
+    row_h = (H_ - 12 * sc) / n
+    for i, (arrow, text) in enumerate(b.lines):
+        cy = 6 * sc + row_h * (i + 0.5)
+        ax = 10 * sc + row_h * 0.45
+        s_ = row_h * 0.34
+        if arrow == "S":
+            d.polygon([(ax, cy - s_), (ax - s_ * 0.8, cy), (ax + s_ * 0.8, cy)], fill=(255, 255, 255))
+            d.rectangle([ax - s_ * 0.22, cy, ax + s_ * 0.22, cy + s_], fill=(255, 255, 255))
+        else:
+            sg = -1 if arrow == "L" else 1
+            d.polygon([(ax + sg * s_, cy), (ax, cy - s_ * 0.8), (ax, cy + s_ * 0.8)], fill=(255, 255, 255))
+            d.rectangle([min(ax, ax - sg * s_), cy - s_ * 0.22, max(ax, ax - sg * s_), cy + s_ * 0.22], fill=(255, 255, 255))
+        tx = ax + row_h * 0.75
+        size = int(row_h * 0.62)
+        while size > 8:
+            f = ST.font(b.font, size)
+            l, t, r_, bt = d.textbbox((0, 0), text, font=f)
+            if r_ - l <= W_ - tx - 8 * sc:
+                break
+            size = int(size * 0.92)
+        f = ST.font(b.font, max(size, 8))
+        l, t, r_, bt = d.textbbox((0, 0), text, font=f)
+        d.text((tx - l, cy - (t + bt) / 2), text, font=f, fill=(255, 255, 255))
+    return im.resize((wpx, hpx), Image.LANCZOS)
+
+
 def render_board(b: Board):
     px = PX_PLATE if b.plate else b.px
     wpx = max(24, int(round(b.w * px)))
     hpx = max(14, int(round(b.h * px)))
+    if b.lines:
+        return _render_direction(b, wpx, hpx)
     sc = 3
     im = Image.new("RGB", (wpx * sc, hpx * sc), b.bg)
     d = ImageDraw.Draw(im)
@@ -566,7 +711,7 @@ def pack_atlas(boards):
     return atlas, white, dark
 
 
-def tile_mesh(ix, iy, boards, zebras, atlas_name, white, dark):
+def tile_mesh(ix, iy, boards, zebras, atlas_name, white, dark, boxes=None):
     mb = MeshBuilder()
     for b in boards:
         t = np.array([-b.nrm[1], b.nrm[0]])           # along the wall
@@ -593,6 +738,20 @@ def tile_mesh(ix, iy, boards, zebras, atlas_name, white, dark):
             cen = V.mean(0)
             out = cen - np.r_[P + n * dep / 2, (fz0 + fz1) / 2]
             mb.add(atlas_name, V, np.tile(dark, (4, 1)), _orient(V, Tq, out), shade=0.8, night=0.6, collide=False)
+        if b.pole_z is not None:
+            # free-standing sign: back face and a pole (with collision) behind the board
+            Bk = B[[1, 0, 3, 2]]
+            mb.add(atlas_name, Bk, np.tile(dark, (4, 1)), _orient(Bk, Tq, np.r_[-n, 0]), shade=0.8, night=0.5, collide=False)
+            r = 0.06
+            pc = P - n * 0.08
+            for k in range(4):
+                a0 = np.array([[1, 1], [-1, 1], [-1, -1], [1, -1]][k]) * r
+                a1 = np.array([[1, 1], [-1, 1], [-1, -1], [1, -1]][(k + 1) % 4]) * r
+                Vp = np.array([[*(pc + a0), b.pole_z], [*(pc + a1), b.pole_z], [*(pc + a1), fz1], [*(pc + a0), fz1]])
+                mb.add(atlas_name, Vp, np.tile(dark, (4, 1)), _orient(Vp, Tq, np.r_[(a0 + a1) / 2, 0]), shade=0.9,
+                       night=0.5, collide=False)
+            if boxes is not None:
+                boxes.append(((pc[0] - 0.08, pc[1] - 0.08, b.pole_z), (pc[0] + 0.08, pc[1] + 0.08, fz1)))
     for q, z in zebras:
         V = np.c_[q, np.full(4, z)]
         Tq = np.array([[0, 1, 2], [0, 2, 3]])
@@ -613,7 +772,8 @@ def build_tiles(ctx, blds, lights, crossings, verbose=True, exclude=None):
     """-> list of dicts(name, id, txd, ix, iy, origin, dff, col, txd_bytes, n_boards).
     exclude: area whose buildings get no boards (landmark footprints: their SA stand-ins are
     replaced by custom models)."""
-    boards = collect_boards(ctx, blds, verbose, exclude) + collect_plates(ctx, blds, verbose, exclude)
+    boards = collect_boards(ctx, blds, verbose, exclude) + collect_plates(ctx, blds, verbose, exclude) + \
+        collect_direction_signs(ctx, lights, verbose)
     zebras = collect_zebras(ctx, lights, crossings)
     per = defaultdict(lambda: ([], []))
     for b in boards:
@@ -635,7 +795,8 @@ def build_tiles(ctx, blds, lights, crossings, verbose=True, exclude=None):
         atlas, white, dark = pack_atlas(bs)
         total_px += atlas.size[0] * atlas.size[1]
         name, tname, aname = sg_name(ix, iy), sg_txd(ix, iy), sg_tex(ix, iy)
-        mb = tile_mesh(ix, iy, bs, zs, aname, white, dark)
+        boxes = []
+        mb = tile_mesh(ix, iy, bs, zs, aname, white, dark, boxes)
         if mb.empty():
             continue
         x0 = -WORLD + ix * TILE
@@ -645,7 +806,9 @@ def build_tiles(ctx, blds, lights, crossings, verbose=True, exclude=None):
         geo, _ = mb.build(origin)
         V = np.asarray(geo.vertices, float)
         data = DFF.write_dff(name, geo)
-        cm = COL.ColModel(name, sg_id(ix, iy), bounds=(V.min(0), V.max(0)))
+        o = np.asarray(origin)
+        cm = COL.ColModel(name, sg_id(ix, iy), bounds=(V.min(0), V.max(0)),
+                          boxes=[(np.asarray(b0) - o, np.asarray(b1) - o, COL.SURF["LAMP_POST"]) for b0, b1 in boxes])
         tx = TXD.write_txd([TXD.texture_native(aname, atlas, encoding="DXT1")])
         out.append({"name": name, "id": sg_id(ix, iy), "txd": tname, "ix": ix, "iy": iy, "origin": origin,
                     "dff": data, "col": COL.write_col3(cm), "txd_bytes": tx, "n_boards": len(bs), "n_zebra": len(zs),
