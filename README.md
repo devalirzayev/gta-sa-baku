@@ -84,7 +84,7 @@ original 1.0 executable (no limit adjuster needed). Current build:
 | car generators 500 (loaded at once) | 440 | 128 + script |
 | visible entity list 1 000 (max draw distance, 90° FOV) | 484 | 259 |
 | visible LOD list 1 000 | 247 | 642 |
-| collision triangles per vehicle sphere (`collTrisB[600]`) | 230 (r = 12), 467 (r = 20) | — |
+| collision triangles per vehicle sphere (`collTrisB[600]`) | 400 (r = 12), 516 (r = 20) | — |
 | IplEntityIndexArrays 40, gpLoadedBuildings 4 096 per text IPL, model info slots 14 000 | 28, 1 152, ~5 400 | — |
 
 Up to a 3 × 3 window of the 500-unit stream cells is loaded at once (IPL bounding box + 350);

@@ -73,7 +73,11 @@ IPL rotation: quaternion (0, 0, −sin(h/2), cos(h/2)) for a CCW heading h; the 
   sphere in static `collTrisB[600]`; with face groups the inner `break` does not stop the next
   group from writing past the array.  Our collision is a coarse twin of the visual mesh (ground
   grid 18, simplified kerbs, decimated decks, single-sided walls): exact sphere–triangle count
-  ≤ 230 within 12 units, ≤ ~470 within 20 (validate.py: error > 560 at 12 units, warning at 20).
+  ≤ 400 within 12 units, ≤ 516 within 20 (validate.py: error > 560 at 12 units, warning at 20).
+* The simplified collision areas overlap instead of leaving cracks: kerb-level areas grow by
+  0.25 up to the simplified road outline, road ribbons and junctions reach 0.45 under them.
+  Vertical rays from 160 000 points on the visual surfaces of 40 random tiles find collision
+  everywhere except on 20 points (0.3–0.5-unit concrete wall tops, one 0.04 sliver).
 * Therefore every custom model has a COL3 entry: real collision for ground tiles, road signs and
   landmarks, bounds-only entries (no volumes → `SetUsesCollision(false)`) for the ground LOD
   tiles, landmark LODs and the merged signage tiles.  validate.py checks every placed instance.
