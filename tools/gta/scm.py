@@ -679,7 +679,7 @@ def build_freeroam_scm(spawn: Sequence[float], hospitals: Sequence[Sequence[floa
                        fade_in_ms: int = 1000, loop_wait_ms: int = 250,
                        weapon_load_timeout_ms: int = 5000,
                        global_space: int = VANILLA_GLOBAL_SPACE,
-                       aaa_stream: bool = False) -> bytes:
+                       aaa_stream: bool = False, loop_extras: Iterable[Extra] = ()) -> bytes:
     """Build the free-roam main.scm (bytes).
 
     spawn      (x, y, z, heading): z = ground height at the spawn (CREATE_PLAYER lifts the
@@ -697,6 +697,8 @@ def build_freeroam_scm(spawn: Sequence[float], hospitals: Sequence[Sequence[floa
                block the script.
     extras     items run once after setup, before the main loop: callables
                ``fn(asm, vars)`` or instruction tuples ``(opcode_or_name, *args)``.
+    loop_extras  the same, emitted inside the main loop (run every loop_wait_ms), e.g. to
+               re-apply SWITCH_RANDOM_TRAINS 0 after a save load (CTrain::InitTrains resets it).
     max_wanted_level 0..6; ped_density / car_density multipliers (game default 1.0).
     clothes    True = R*'s new-game outfit (DEFAULT_CLOTHES) + BUILD_PLAYER_MODEL, False =
                none, or a sequence of (texture, model, body_part 0..17).
@@ -833,6 +835,11 @@ def build_freeroam_scm(spawn: Sequence[float], hospitals: Sequence[Sequence[floa
 
     loop = a.label("MAIN_LOOP")
     a.wait(loop_wait_ms)
+    for ex in loop_extras:
+        if callable(ex):
+            ex(a, v)
+        else:
+            a.emit(*ex)
     a.goto(loop)
     return build_main_scm(a, aaa_stream=aaa_stream)
 

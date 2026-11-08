@@ -162,7 +162,8 @@ def make_scm(W, spawn=None):
         heading = math.degrees(math.atan2(-(tx - sx), ty - sy)) % 360.0
         spawn = (sx, sy, sz, heading)
     data = SCM.build_freeroam_scm(spawn, hosp, pol, weather=0, hour=13, money=25000,
-                                  extras=[("SWITCH_RANDOM_TRAINS", 0)], max_wanted_level=6)
+                                  extras=[("SWITCH_RANDOM_TRAINS", 0)], max_wanted_level=6,
+                                  loop_extras=[("SWITCH_RANDOM_TRAINS", 0)])
     return data, spawn, hosp, pol
 
 
