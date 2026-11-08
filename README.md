@@ -6,6 +6,18 @@ Heydər Əliyev Mərkəzi – Ağ Şəhər – Dənizkənarı Bulvar.
 
 ![radar](docs/img/radar.png)
 
+| | |
+|---|---|
+| ![Alov qüllələri](docs/img/preview_flame_towers_night.jpg) | ![Heydər Əliyev Mərkəzi](docs/img/preview_hac.jpg) |
+| ![Heydər məscidi](docs/img/preview_heydar_mosque.jpg) | ![Mağaza lövhələri](docs/img/preview_shop_boards.jpg) |
+
+(Previews of the custom models only; the San Andreas buildings come from the player's game and
+are not part of these renders. / Önizləmələrdə yalnız öz modellərimiz görünür; SA binaları
+oyunçunun öz oyunundan götürülür.)
+
+**Yükləmə / Download:** `release/` qovluğundakı `Baku_SA.zip.001, .002 ...` hissələri
+(`JOIN_PARTS.bat` və ya 7-Zip ilə birləşdirin), sonra `Baku_SA/INSTALL.bat`.
+
 ## Azərbaycanca
 
 * Yol şəbəkəsi, körpülər/estakadalar, tunel girişləri, səkilər — OpenStreetMap məlumatından
@@ -52,12 +64,13 @@ Build from scratch (Python 3.13, numpy, shapely 2.2, pyproj, scipy, pillow, pyar
 ```
 python3 tools/fetch_overture.py data/raw && python3 tools/fetch_dem.py data/raw/dem
 python3 -m tools.tex.ground_tex build/tex
-python3 -m tools.build.build_ground --jobs 4
 python3 -c "from tools.build import ground, buildings; import pickle; W=ground.prepare(); pickle.dump(buildings.place_all(W), open('data/cache/buildings.pkl','wb'))"
+python3 -m tools.build.build_ground --jobs 4      # ground tiles + LODs (LOD textures show the roofs)
 python3 -m tools.build.build_paths
-python3 -m tools.build.landmarks
+python3 -m tools.build.landmarks && python3 -m tools.build.rail
 python3 -m tools.build.props && python3 -m tools.build.build_signs && python3 -m tools.build.parking
 python3 -m tools.build.package && python3 -m tools.validate
+python3 -m tools.release                          # split zip in release/
 ```
 
 Engine research notes (all with sources from the reverse-engineered game code) are in
