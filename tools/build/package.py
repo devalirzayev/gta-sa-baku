@@ -26,7 +26,7 @@ from tools.geo.proj import WORLD
 from tools.gta import ipl as IPL, zones as ZN, water as WT, tracks as TR, radar as RD
 from tools.rw import img, col, txd, dff
 
-DIST = "dist"
+DIST = os.environ.get("BAKU_DIST", "dist")
 MODDIR = os.path.join(DIST, "Baku_SA")
 GROUND = "build/out/ground"
 SIGNS = "build/out/signs"
