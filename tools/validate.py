@@ -1,6 +1,6 @@
 """Consistency + engine-limit validator for the packaged mod (dist/).
 
-    python3 -m tools.validate [dist]
+    python3 -m tools.validate [dist/Baku_SA]
 Re-parses every generated file with the project readers and checks cross references and the
 limits documented in docs/notes/*.md. Exit code 1 on any error.
 """
@@ -48,7 +48,7 @@ def parse_ide(text):
     return out
 
 
-def main(dist="dist"):
+def main(dist="dist/Baku_SA"):
     F = os.path.join(dist, "files")
     G = os.path.join(dist, "gta3img")
     models = pd.read_csv("data/sa/models.csv", low_memory=False)
@@ -173,7 +173,14 @@ def main(dist="dist"):
             if abs(i.x) > 3000 or abs(i.y) > 3000:
                 err(f"{real[0]}: instance outside world {i.x:.0f},{i.y:.0f}")
     n_text = sum(len(v) for v in text_inst.values())
+    dyn_ids = {int(r.id) for r in models.itertuples()
+               if isinstance(r.engine_refs, str) and "object.dat" in r.engine_refs}
+    n_text_dyn = sum(1 for v in text_inst.values() for i in v if i.model_id in dyn_ids)
     stream_counts = {}
+    CELL, NC = 500.0, 12
+    blk_sta = np.zeros((NC, NC), int)
+    blk_dyn = np.zeros((NC, NC), int)
+    dyn_xy = []
     for fn in os.listdir(G):
         if not fn.endswith(".ipl"):
             continue
@@ -188,16 +195,50 @@ def main(dist="dist"):
                 err(f"{fn}: lod index {i.lod} >= {len(parent)} ({grp})")
             if abs(i.x) > 3000 or abs(i.y) > 3000:
                 err(f"{fn}: instance outside world")
+                continue
+            cx = min(NC - 1, int((i.x + 3000) // CELL))
+            cy = min(NC - 1, int((i.y + 3000) // CELL))
+            if i.model_id in dyn_ids:
+                blk_dyn[cx, cy] += 1
+                dyn_xy.append((i.x, i.y))
+            else:
+                blk_sta[cx, cy] += 1
         stream_counts[stem] = len(insts)
         if len(stem) > 17:
             err(f"IPL slot name too long {stem}")
-    cells = sorted(stream_counts.values(), reverse=True)
-    peak = sum(cells[:4])
-    est_pool = n_text + peak + 1500      # + vanilla interior text IPLs (estimate)
+    # a player can be inside the (200-unit inflated) bounding boxes of at most a 2x2 block of cells
+    def block_max(a):
+        return max(int(a[i:i + 2, j:j + 2].sum()) for i in range(NC - 1) for j in range(NC - 1))
+    peak = block_max(blk_sta)
+    peak_dyn = block_max(blk_dyn)
+    est_pool = n_text - n_text_dyn + peak + 1500      # + vanilla interior text IPLs (estimate)
     print(f"IPL: {n_text} text instances, {sum(stream_counts.values())} streamed in {len(stream_counts)} binary IPLs; "
-          f"densest 4 cells {peak} -> building pool estimate {est_pool}/13000")
+          f"densest 2x2 block {peak} static -> building pool estimate {est_pool}/13000")
     if est_pool > 12000:
         err(f"building pool estimate {est_pool} too close to 13000")
+    # dynamic (object.dat) instances -> CDummyObject: dummy pool 2500, double-link nodes 3200 (shared),
+    # CObject within 80 units (object pool 350). Vanilla: 1537 per block, 144 within 100 units.
+    est_dummy = n_text_dyn + peak_dyn + 60
+    near = 0
+    if dyn_xy:
+        from scipy.spatial import cKDTree
+        t = cKDTree(np.array(dyn_xy))
+        gpts = np.mgrid[-3000:3000:20, -3000:3000:20].reshape(2, -1).T
+        near = int(max(len(x) for x in t.query_ball_point(gpts, 100.0)))
+    print(f"dynamic objects: {len(dyn_xy)} streamed, densest block {peak_dyn} -> dummy estimate {est_dummy}/2500, "
+          f"double-link estimate {int(est_dummy * 1.25 + 700)}/3200; max within 100 units {near} (object pool 350)")
+    if est_dummy > 2000 or est_dummy * 1.25 + 700 > 3000:
+        err(f"dynamic object density too high ({est_dummy} dummies in the densest block)")
+    if near > 160:
+        err(f"{near} dynamic objects within 100 units (vanilla max 144)")
+    # single-link sector nodes (70000): ground tiles span ~6x6 50-unit sectors, BIG/LOD entities use 200-unit sectors
+    n_tiles = sum(1 for i in text_inst.get("baku", []) if i.lod >= 0)
+    n_lodt = len(text_inst.get("baku", [])) - n_tiles
+    n_blod = n_text - len(text_inst.get("baku", []))
+    est_single = 42 * n_tiles + 12 * n_lodt + 2 * n_blod + int(1.4 * peak) + 1000
+    print(f"single-link sector nodes estimate {est_single}/70000")
+    if est_single > 60000:
+        err(f"single-link node estimate {est_single} too close to 70000")
     # ------------------------------------------------------------ water, zones, paths, scm, radar
     st = WT.validate_water(WT.parse_water_dat(open(os.path.join(F, "data", "water.dat")).read()))
     print("water:", WT.summary(st))

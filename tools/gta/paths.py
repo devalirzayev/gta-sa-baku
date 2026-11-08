@@ -556,7 +556,8 @@ class PathNetwork:
 
     def signalize_junction(self, node: int, approach_length: float | None = None,
                            group_for: Callable[[int], int | None] | None = None,
-                           min_piece: float = 4.0) -> list[int]:
+                           min_piece: float = 4.0,
+                           skip_from: Callable[[int], bool] | None = None) -> list[int]:
         """Put traffic lights on every approach into ``node``.
 
         Each incident car link longer than ``approach_length + min_piece`` is
@@ -565,8 +566,13 @@ class PathNetwork:
         12 units before that navi).  ``approach_length=None`` derives it from
         the widest crossing road: 2 * (half width + 3).  ``group_for(link)`` may
         force a light group; default: from the travel direction (N-S travel ->
-        LIGHT_NORTH_SOUTH, else LIGHT_WEST_EAST).  Returns the light links."""
+        LIGHT_NORTH_SOUTH, else LIGHT_WEST_EAST).  ``skip_from(other_node)`` may
+        exclude approaches (e.g. links inside a multi-node junction).  Returns the
+        light links."""
         incident = [i for i, l in enumerate(self.car_links) if node in (l.a, l.b)]
+        if skip_from is not None:
+            incident = [i for i in incident
+                        if not skip_from(self.car_links[i].b if self.car_links[i].a == node else self.car_links[i].a)]
         if approach_length is None:
             half = 0.0
             for i in incident:

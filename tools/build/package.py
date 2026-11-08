@@ -150,6 +150,16 @@ def main():
                 group_lods[grp].append(IPL.Inst(b["lod_id"], lm.name, b["x"], b["y"], b["z"], b["heading"]))
                 lod = len(group_lods[grp]) - 1
             stream_insts[sname].append(IPL.Inst(b["id"], b["name"], b["x"], b["y"], b["z"], b["heading"], lod=lod))
+    # ---------------------------------------------------------------- props (lamps, lights, trees, ...)
+    props = pickle.load(open("data/cache/props.pkl", "rb")) if os.path.exists("data/cache/props.pkl") else []
+    keep_ide = {p.upper() for p in KEEP_IDE}
+    for p in props:
+        r = mrow[p["id"]]
+        assert str(r.ide_file).upper() in keep_ide, (p["id"], r.ide_file)   # defined by a kept vanilla IDE
+        cx = min(NC - 1, max(0, int((p["x"] + WORLD) // CELL)))
+        cy = min(NC - 1, max(0, int((p["y"] + WORLD) // CELL)))
+        stream_insts[cell_name[(cx, cy)][1]].append(IPL.Inst(p["id"], p["name"], p["x"], p["y"], p["z"], p["heading"]))
+    manifest["props"] = {k: sum(1 for p in props if p["kind"] == k) for k in sorted({p["kind"] for p in props})}
     # text IPLs: ground (baku.ipl) + one per vanilla group name
     text_ipls = ["baku"]
     with open(os.path.join(maps, "baku.ipl"), "w", newline="") as f:

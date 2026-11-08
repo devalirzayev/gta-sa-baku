@@ -19,6 +19,43 @@ from tools.build import ground
 LIM = WORLD - 3.0
 
 
+def light_group_for_dir(dx, dy):
+    """Phase group the engine gives a traffic-light object whose forward (+y) axis points along
+    (dx, dy): CTrafficLights::FindTrafficLightTypeFromOrientation (0x49D4D0), heading 60-150 or
+    240-330 deg -> group 1 (LightForCars1, 'north-south'), otherwise group 2.  Path lights use the
+    same rule on the travel direction, so the visible lights (props.py places them with their
+    forward axis along the travel direction) always show the phase the AI obeys."""
+    a = math.degrees(math.atan2(dy, dx)) % 360.0
+    return P.LIGHT_NORTH_SOUTH if (60.0 <= a < 150.0 or 240.0 <= a < 330.0) else P.LIGHT_WEST_EAST
+
+
+def signal_points():
+    out = []
+    for r in pq.read_table("data/raw/infrastructure.parquet", columns=["class", "geometry"]).to_pylist():
+        if r["class"] == "traffic_signals":
+            p = shapely.from_wkb(r["geometry"])
+            if p.geom_type == "Point":
+                out.append(lonlat_to_game(p.x, p.y))
+    return np.array(out, dtype=float).reshape(-1, 2)
+
+
+def signalised_junctions(W, max_dist=20.0):
+    """Layout junctions (ground level) with an OSM traffic_signals point on or near them.
+    Mid-block signals (pedestrian crossings) are ignored: in SA a light always runs a car phase."""
+    js = [j for j in W.lay.junctions.values() if j.polygon is not None and not j.polygon.is_empty]
+    if not js:
+        return []
+    polys = [j.polygon for j in js]
+    tree = shapely.STRtree(polys)
+    marked = set()
+    for s in signal_points():
+        p = shapely.Point(float(s[0]), float(s[1]))
+        i = tree.nearest(p)
+        if i is not None and polys[int(i)].distance(p) <= max_dist:
+            marked.add(js[int(i)].id)
+    return [W.lay.junctions[k] for k in sorted(marked)]
+
+
 def _runs(mask):
     out, i, n = [], 0, len(mask)
     while i < n:
@@ -122,33 +159,29 @@ def build_network(W, verbose=True):
                     continue
                 net.add_car_link(a, b, lf, lb)
                 n_links += 1
-    # traffic lights at signalised junctions (Overture traffic_signals points)
-    sig = []
-    for r in pq.read_table("data/raw/infrastructure.parquet", columns=["class", "geometry"]).to_pylist():
-        if r["class"] == "traffic_signals":
-            p = shapely.from_wkb(r["geometry"])
-            if p.geom_type == "Point":
-                sig.append(lonlat_to_game(p.x, p.y))
-    jn = [gn for gn in car_of if sum(1 for _ in ()) == 0]
-    deg = defaultdict(int)
-    for l in net.car_links:
-        deg[l.a] += 1
-        deg[l.b] += 1
-    junction_nodes = [ci for gn, ci in car_of.items() if deg[ci] >= 3]
+    # traffic lights at signalised junctions (Overture traffic_signals points).  A layout junction
+    # may consist of several graph nodes (dual carriageways): every member node gets lights on the
+    # approaches that come from outside the junction, none on the links inside it.
     signalised = set()
-    if sig and junction_nodes:
-        jxy = np.array([[net.car_nodes[c].x, net.car_nodes[c].y] for c in junction_nodes])
-        tree = cKDTree(jxy)
-        for s in np.array(sig, dtype=float):
-            d, i = tree.query(s)
-            if d < 30:
-                signalised.add(junction_nodes[i])
-    for c in signalised:
-        try:
-            net.signalize_junction(c)
-        except Exception as ex:  # pragma: no cover
-            if verbose:
-                print("signal fail", c, ex)
+    sig_junctions = signalised_junctions(W)
+    for j in sig_junctions:
+        members = {car_of[n] for n in j.nodes if n in car_of}
+        for n in j.nodes:
+            c = car_of.get(n)
+            if c is None:
+                continue
+
+            def group_for(i, c=c):
+                l = net.car_links[i]
+                o = l.b if l.a == c else l.a
+                return light_group_for_dir(net.car_nodes[c].x - net.car_nodes[o].x,
+                                           net.car_nodes[c].y - net.car_nodes[o].y)
+            try:
+                if net.signalize_junction(c, group_for=group_for, skip_from=lambda o, m=members: o in m):
+                    signalised.add(c)
+            except Exception as ex:  # pragma: no cover
+                if verbose:
+                    print("signal fail", c, ex)
     # ---------------- peds ----------------
     ped_ends = defaultdict(list)    # junction graph node -> ped node indices near it
     lay = W.lay
@@ -272,13 +305,42 @@ def sanitize(net):
     return net
 
 
+def light_approaches(net):
+    """Traffic-light approaches of a (sanitised) network: one record per car link with a light."""
+    out = []
+    for l in net.car_links:
+        if l.light_toward is None:
+            continue
+        j = l.light_toward
+        o = l.b if l.a == j else l.a
+        nj, no = net.car_nodes[j], net.car_nodes[o]
+        lanes_in = l.lanes_ab if l.b == j else l.lanes_ba
+        lanes_out = l.lanes_ba if l.b == j else l.lanes_ab
+        group = l.light_group or light_group_for_dir(nj.x - no.x, nj.y - no.y)
+        out.append({"jx": nj.x, "jy": nj.y, "jz": nj.z, "ox": no.x, "oy": no.y, "oz": no.z,
+                    "group": int(group), "lanes_in": int(lanes_in), "lanes_out": int(lanes_out)})
+    return out
+
+
 def compile_paths(W, out_dir=None, verbose=True):
+    import json
+    import os
     net = sanitize(build_network(W, verbose))
+    lights = light_approaches(net)
     cp = P.compile_network(net, max_link_length=100.0, drop_isolated=True)
     if verbose:
         print("compiled:", cp.stats if hasattr(cp, "stats") else "", "warnings:", len(cp.warnings))
         for w in cp.warnings[:10]:
             print("  ", w)
+        print("traffic-light approaches:", len(lights))
     if out_dir:
         cp.write(out_dir)
+        with open(os.path.join(out_dir, "lights.json"), "w") as f:
+            json.dump(lights, f)
     return cp
+
+
+if __name__ == "__main__":
+    W = ground.prepare()
+    c = compile_paths(W, "build/out/paths")
+    c.write_roadblox("build/out/paths/roadblox.dat")
