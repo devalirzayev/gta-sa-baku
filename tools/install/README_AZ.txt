@@ -13,8 +13,17 @@ Nələr var:
   * Real relyef (Bakı amfiteatrı, Yasamal yamacı) və su: Xəzər dənizi,
     Böyükşor gölü, Qanlı göl, Yasamal gölü.
   * Binalar: GTA San Andreas-ın ORİJİNAL bina modelləri, Bakının real bina
-    konturlarına görə seçilib yerləşdirilib (27 800+ bina).
-  * Maşın və piyada trafiki (AI yolları), real yerlərində 311 svetoforlu qovşaq.
+    konturlarına görə seçilib yerləşdirilib (34 000+ bina).
+  * Görməli yerlər: Heydər Əliyev Mərkəzi, Alov qüllələri (gecə alov kimi
+    işıqlanır), Heydər məscidi, Qız qalası.
+  * Mağaza/market adları real adlarla (Bravo, Araz, Bazarstore, apteklər,
+    banklar, kafelər ...), mavi küçə adı lövhələri, zebra keçidləri.
+  * Azərbaycan yol nişanları (STOP, yol ver, piyada keçidi, giriş qadağandır,
+    sürət həddi, avtobus dayanacağı, metro "M" ...) - sındırmaq olar.
+  * Küçə işıqları, 40 000+ ağac, avtobus dayanacaqları, skamyalar, həyətlərdə
+    və dayanacaqlarda park olunmuş maşınlar.
+  * Maşın və piyada trafiki (AI yolları), real yerlərində svetoforlu qovşaqlar
+    (svetoforun rəngi ilə maşınların davranışı eynidir).
   * Radar və menyu xəritəsi — Bakı xəritəsi.
   * Ekranda rayon adları: Nəsimi, Yasamal, Biləcəri, 9-cu mikrorayon və s.
   * Sərbəst gəzinti (free roam): oyun Heydər Əliyev Mərkəzinin yanında başlayır,
@@ -28,8 +37,8 @@ QURAŞDIRMA
   3. Açılan pəncərədə GTA San Andreas qovluğunu seçin (gta_sa.exe olan qovluq).
   4. Oyunu açın və "Start New Game" seçin. Köhnə save-ləri YÜKLƏMƏYİN.
 
-Quraşdırıcı dəyişdirdiyi hər şeyin ehtiyat surətini <oyun>\baku_backup
-qovluğuna yazır. Geri qaytarmaq üçün UNINSTALL.bat — oyun orijinal vəziyyətinə
+Quraşdırıcı dəyişdirdiyi hər şeyin (gta3.img qovluğu, data\object.dat,
+gxt faylları ...) ehtiyat surətini <oyun>\baku_backup qovluğuna yazır. Geri qaytarmaq üçün UNINSTALL.bat — oyun orijinal vəziyyətinə
 (bayt-bayt) qayıdır.
 
 Python istifadəçiləri üçün alternativ:

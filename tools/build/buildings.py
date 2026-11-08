@@ -142,13 +142,17 @@ class Placer:
         self.pools = {k: self.c[self.c["style"].isin(v)].reset_index(drop=True) for k, v in STYLE_POOLS.items()}
 
     # --------------------------------------------------------------
-    def blocked_fraction(self, poly):
+    def blocked_fraction(self, poly, split=False):
+        """Share of poly covered by roads/sidewalks/water (minor roads count half) and by already
+        placed models; split=True returns both parts separately."""
         a = poly.area
         tot = 0.0
         for idx in self.block_tree.query(poly, predicate="intersects"):
             tot += poly.intersection(self.block_parts[idx]).area
         for idx in self.minor_tree.query(poly, predicate="intersects"):
             tot += 0.5 * poly.intersection(self.minor[idx]).area
+        road = tot
+        tot = 0.0
         if self.placed:
             if self.placed_tree is None or self.dirty > 200:
                 self.placed_tree = shapely.STRtree(self.placed)
@@ -159,7 +163,23 @@ class Placer:
             for q in self.placed[self._ptree_n:]:
                 if q.intersects(poly):
                     tot += poly.intersection(q).area
-        return tot / max(a, 1e-6)
+        if split:
+            return road / max(a, 1e-6), tot / max(a, 1e-6)
+        return (road + tot) / max(a, 1e-6)
+
+    def free_part(self, g):
+        """The footprint minus roads, sidewalks, water and road structures (all buffered a bit)."""
+        idx = self.block_tree.query(g, predicate="intersects")
+        if len(idx) == 0:
+            return g
+        cut = shapely.union_all([self.block_parts[i] for i in idx]).buffer(0.4)
+        f = g.difference(cut)
+        if f.is_empty:
+            return f
+        parts = [p for p in getattr(f, "geoms", [f]) if p.geom_type == "Polygon" and p.area >= 20.0]
+        if not parts:
+            return shapely.Polygon()
+        return shapely.MultiPolygon(parts) if len(parts) > 1 else parts[0]
 
     def choose(self, style, L, Wd, H, big_ok=False):
         pool = self.pools[style]
@@ -167,38 +187,45 @@ class Placer:
             return None
         ml, ms, mh = pool.ml.values, pool.ms.values, pool.height.values
         best = None
-        for k in (1, 2, 3, 4, 5, 6):
-            Lk = L / k
-            if Lk < 4:
+        risk = pool.ground_risk.values
+        use = np.array([self.usage.get(i, 0) for i in pool.id.values])
+        for m_ in (1, 2, 3):                       # split across the width (big footprints)
+            Wm = Wd / m_
+            if Wm < 8 and m_ > 1:
                 break
-            cost = (2.2 * np.maximum(0, ms - Wd * 1.12 - 1.0) / max(Wd, 1)
-                    + 1.8 * np.maximum(0, ml - Lk * 1.10 - 1.0) / max(Lk, 1)
-                    + 0.7 * np.maximum(0, Wd * 0.75 - ms) / max(Wd, 1)
-                    + 0.7 * np.maximum(0, Lk * 0.80 - ml) / max(Lk, 1)
-                    + 0.6 * np.abs(np.log(np.maximum(mh, 1) / max(H, 3)))
-                    + 0.08 * (k - 1))
-            risk = pool.ground_risk.values
-            cost = cost + np.where(risk == "medium", 0.25 if big_ok else 0.8, 0.0)
-            use = np.array([self.usage.get(i, 0) for i in pool.id.values])
-            cost = cost + 0.03 * np.sqrt(use) + np.array([self.rng.random() * 0.12 for _ in range(len(pool))])
-            i = int(np.argmin(cost))
-            if best is None or cost[i] < best[0]:
-                best = (float(cost[i]), k, pool.iloc[i])
+            for k in (1, 2, 3, 4, 5, 6):
+                Lk = L / k
+                if Lk < 4:
+                    break
+                cost = (2.2 * np.maximum(0, ms - Wm * 1.12 - 1.0) / max(Wm, 1)
+                        + 1.8 * np.maximum(0, ml - Lk * 1.10 - 1.0) / max(Lk, 1)
+                        + 0.7 * np.maximum(0, Wm * 0.75 - ms) / max(Wm, 1)
+                        + 0.7 * np.maximum(0, Lk * 0.80 - ml) / max(Lk, 1)
+                        + 0.6 * np.abs(np.log(np.maximum(mh, 1) / max(H, 3)))
+                        + 0.08 * (k - 1) + 0.12 * (m_ - 1))
+                cost = cost + np.where(risk == "medium", 0.25 if big_ok else 0.8, 0.0)
+                cost = cost + 0.03 * np.sqrt(use) + np.array([self.rng.random() * 0.12 for _ in range(len(pool))])
+                i = int(np.argmin(cost))
+                if best is None or cost[i] < best[0]:
+                    best = (float(cost[i]), (k, m_), pool.iloc[i])
         return best
 
     def place_rect(self, c, u, L, Wd, H, style, big_ok=False):
         ch = self.choose(style, L, Wd, H, big_ok)
         if ch is None:
             return 0
-        cost, k, m = ch
+        cost, (k, m_), m = ch
         if cost > 2.6:
             return 0
         n = 0
         Lk = L / k
-        for i in range(k):
-            ci = c + u * ((i + 0.5) * Lk - L / 2)
-            if self._place_model(m, ci, u):
-                n += 1
+        Wm = Wd / m_
+        v = np.array([-u[1], u[0]])
+        for j in range(m_):
+            for i in range(k):
+                ci = c + u * ((i + 0.5) * Lk - L / 2) + v * ((j + 0.5) * Wm - Wd / 2)
+                if self._place_model(m, ci, u):
+                    n += 1
         return n
 
     def _place_model(self, m, c, u):
@@ -221,8 +248,8 @@ class Placer:
             return False
         if abs(pos[0]) > WORLD - 20 or abs(pos[1]) > WORLD - 20:
             return False
-        frac = self.blocked_fraction(poly.buffer(-0.4) if poly.area > 30 else poly)
-        if frac > 0.06:
+        road, other = self.blocked_fraction(poly.buffer(-0.4) if poly.area > 30 else poly, split=True)
+        if road > 0.05 or other > 0.12:
             return False
         zs = ground.H_at(self.W, wc[:, 0], wc[:, 1])
         zc = ground.H_at(self.W, np.array([c[0]]), np.array([c[1]]))[0]
@@ -236,6 +263,59 @@ class Placer:
         self.dirty += 1
         self.usage[int(m.id)] += 1
         return True
+
+
+def _first_exit(poly, p, d, max_len=45.0):
+    """Distance from p (on the boundary) along d until the ray leaves poly."""
+    seg = shapely.LineString([p + d * 0.05, p + d * max_len])
+    inter = seg.intersection(poly)
+    if inter.is_empty:
+        return 0.0
+    first = min(getattr(inter, "geoms", [inter]), key=lambda g: shapely.distance(shapely.Point(*p), g))
+    if first.geom_type != "LineString":
+        return 0.0
+    c = np.asarray(first.coords)
+    return float(np.max(np.hypot(*(c - p).T)))
+
+
+def decompose(poly):
+    """Rectangles (c, u, L, Wd) covering a footprint.  Compact footprints -> their OBB; L/U/O shaped
+    ones and perimeter blocks -> 'wings' along their long outer edges (where the facades are)."""
+    c, u, L, Wd = _obb(poly)
+    fill = poly.area / max(L * Wd, 1e-6)
+    if fill >= 0.78 or poly.area < 120:
+        return [(c, u, L, Wd)]
+    ext = poly.simplify(1.0).exterior
+    pts = np.asarray(ext.coords)
+    ccw = shapely.LinearRing(pts).is_ccw
+    wings = []
+    for i in range(len(pts) - 1):
+        a, b = pts[i], pts[i + 1]
+        e = b - a
+        Le = float(np.hypot(*e))
+        if Le < 7.0:
+            continue
+        t = e / Le
+        n_in = np.array([-t[1], t[0]]) if ccw else np.array([t[1], -t[0]])
+        depths = [_first_exit(poly, a + e * f, n_in) for f in (0.25, 0.5, 0.75)]
+        dep = float(np.clip(np.median(depths), 0.0, 22.0))
+        if dep < 5.0:
+            continue
+        rc = (a + b) / 2 + n_in * dep / 2
+        r = _rect(rc, t, Le - 0.6, dep)
+        if r.area <= 0 or r.intersection(poly).area / r.area < 0.8:
+            continue
+        wings.append((Le, rc, t, Le - 0.6, dep, r))
+    if not wings:
+        return [(c, u, L, Wd)]
+    wings.sort(key=lambda w: -w[0])
+    taken, out = [], []
+    for Le, rc, t, LL, dep, r in wings:
+        if any(r.intersection(q).area > 0.25 * r.area for q in taken):
+            continue
+        taken.append(r)
+        out.append((rc, t, LL, dep))
+    return out
 
 
 def load_footprints():
@@ -294,17 +374,13 @@ def place_all(W, verbose=True):
     for k, (a, g, c, u, L, Wd, style, floors, fill) in enumerate(items):
         H = floors * FLOOR_H
         big = a > 600
-        rects = [(c, u, L, Wd)]
-        if fill < 0.62 and a > 250:
-            # split along the long axis into two halves and keep the parts that are filled
-            rects = []
-            for sgn in (-1, 1):
-                cc = c + u * sgn * L / 4
-                half = _rect(cc, u, L / 2, Wd).intersection(g)
-                if half.is_empty or half.area < 0.35 * (L / 2 * Wd):
-                    continue
-                c2, u2, L2, W2 = _obb(half)
-                rects.append((c2, u2, L2, W2))
+        # only the part of the footprint that is not taken by our (wider than real) roads
+        free = P.free_part(g)
+        if free.is_empty:
+            continue
+        rects = []
+        for part in getattr(free, "geoms", [free]):
+            rects += decompose(part)
         for (cc, uu, LL, WW) in rects:
             if style == "house":
                 # SA houses are bigger than Baku houses: use a minimum target size
