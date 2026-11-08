@@ -19,8 +19,8 @@ Features
   * Real shop / market names (Bravo, Araz, Bazarstore, pharmacies, banks,
     cafes ...), blue street-name plates, zebra crossings.
   * Azerbaijani road signs (STOP, give way, pedestrian crossing, no entry, speed
-    limits, bus stop, Baku Metro "M" ...) - breakable like the vanilla ones.
-  * Street lamps, 40,000+ trees, bus shelters, benches, parked cars in
+    limits, bus stop, Baku Metro "M" ...) - knocked over like the vanilla ones.
+  * Street lamps, 30,000+ trees, bus shelters, benches, parked cars in
     courtyards and parking lots.
   * Car and pedestrian AI paths, traffic lights at the real signalised
     junctions (the lights you see are the phases the AI obeys).

@@ -19,8 +19,8 @@ Nələr var:
   * Mağaza/market adları real adlarla (Bravo, Araz, Bazarstore, apteklər,
     banklar, kafelər ...), mavi küçə adı lövhələri, zebra keçidləri.
   * Azərbaycan yol nişanları (STOP, yol ver, piyada keçidi, giriş qadağandır,
-    sürət həddi, avtobus dayanacağı, metro "M" ...) - sındırmaq olar.
-  * Küçə işıqları, 40 000+ ağac, avtobus dayanacaqları, skamyalar, həyətlərdə
+    sürət həddi, avtobus dayanacağı, metro "M" ...) - maşın vuranda yıxılır.
+  * Küçə işıqları, 30 000+ ağac, avtobus dayanacaqları, skamyalar, həyətlərdə
     və dayanacaqlarda park olunmuş maşınlar.
   * Maşın və piyada trafiki (AI yolları), real yerlərində svetoforlu qovşaqlar
     (svetoforun rəngi ilə maşınların davranışı eynidir).

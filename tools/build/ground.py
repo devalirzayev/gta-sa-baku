@@ -300,9 +300,14 @@ def tile_box(ix, iy):
 
 COL_GRID = 18.0          # collision triangulation grid (coarse: CCollision::ProcessColModels keeps at
 COL_SIMPLIFY = 0.35      # most 600 triangles touching a vehicle's bounding sphere, Collision.cpp)
+# Neighbouring areas are simplified independently, which leaves cracks of up to ~0.4 units in
+# the collision (vertical lines - FindGroundZ, car generators, wheel lines - fall through).
+# Collision areas therefore overlap: kerb-level areas grow by COL_OVERLAP except into the roads,
+# road ribbons and junctions grow by COL_OVERLAP under the kerb-level surfaces.
+COL_OVERLAP = 0.25
 
 
-def add_area(mb, W, geom, mat, z_off=KERB, grid=8.0, under_water=False):
+def add_area(mb, W, geom, mat, z_off=KERB, grid=8.0, under_water=False, clip=None):
     P, Tr = triangulate_area(geom, grid)
     if len(Tr) == 0:
         return
@@ -314,9 +319,12 @@ def add_area(mb, W, geom, mat, z_off=KERB, grid=8.0, under_water=False):
     if under_water:
         sh = sh * 0.8
     mb.add(mat, np.c_[P, z], UV, Tr, shade=sh, collide=False)
-    # collision: same area, simplified outline, coarse grid
+    # collision: same area, simplified outline (grown by COL_OVERLAP, not into `clip`), coarse grid
     g2 = geom.simplify(COL_SIMPLIFY, preserve_topology=True)
-    P2, T2 = triangulate_area(g2 if not g2.is_empty else geom, max(COL_GRID, grid * 2))
+    g2 = (g2 if not g2.is_empty else geom).buffer(COL_OVERLAP, join_style="mitre", mitre_limit=2.0)
+    if clip is not None and not clip.is_empty:
+        g2 = g2.difference(clip)
+    P2, T2 = triangulate_area(g2, max(COL_GRID, grid * 2))
     if len(T2):
         mb.add_col(np.c_[P2, H_at(W, P2[:, 0], P2[:, 1]) + dz], T2, GROUND_MATS[mat][1])
 
@@ -550,7 +558,10 @@ def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:
         k3 = np.arange(len(keepc) - 1)
         sel3 = np.array([sel[keepc[i]:keepc[i + 1]].all() for i in k3]) if len(k3) else np.zeros(0, bool)
         if sel3.any():
-            Vc, _, Tc = strip(a[keepc], b[keepc], z[keepc], z[keepc], s_c[keepc])
+            ac, bc = a[keepc], b[keepc]
+            d = ac - bc
+            d = d / np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-9)[:, None] * COL_OVERLAP
+            Vc, _, Tc = strip(ac + d, bc - d, z[keepc], z[keepc], s_c[keepc])     # under the kerbs
             mb.add_col(Vc, Tc[np.r_[sel3, sel3]], SURF["TARMAC"])
     # ---- junction polygons ----
     for j in lay.junctions.values():
@@ -564,7 +575,8 @@ def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:
             mb.add("bk_asph", np.c_[P, z], np.c_[P[:, 0] / S, -P[:, 1] / S], Tr,
                    shade=shade_terrain(W, P[:, 0], P[:, 1]), collide=False)
             g2 = part.simplify(COL_SIMPLIFY, preserve_topology=True)
-            P2, T2 = triangulate_area(g2 if not g2.is_empty else part, COL_GRID)
+            g2 = (g2 if not g2.is_empty else part).buffer(COL_OVERLAP, join_style="mitre", mitre_limit=2.0)
+            P2, T2 = triangulate_area(g2, COL_GRID)
             if len(T2):
                 mb.add_col(np.c_[P2, H_at(W, P2[:, 0], P2[:, 1])], T2, SURF["TARMAC"])
     # ---- structures (bridges, ramps, trenches, tunnels) ----
@@ -574,17 +586,18 @@ def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:
     trench_t = spatial(W, "trench_parts").clip(boxb)
     add_kerbs(mb, W, road_t.difference(trench_t) if not trench_t.is_empty else road_t, box)
     taken = road_t.union(trench_t) if not trench_t.is_empty else road_t
+    lowered = taken                       # road level: kerb-level collision must not grow into it
     sw = spatial(W, "sw_parts").clip(boxb).difference(taken).intersection(box)
     if not sw.is_empty:
-        add_area(mb, W, sw, "bk_pave", grid=8.0)
+        add_area(mb, W, sw, "bk_pave", grid=8.0, clip=lowered)
     taken = taken.union(sw)
     mn = spatial(W, "minor_parts").clip(boxb).difference(taken).intersection(box)
     if not mn.is_empty:
-        add_area(mb, W, mn, "bk_asph2", grid=8.0)
+        add_area(mb, W, mn, "bk_asph2", grid=8.0, clip=lowered)
     taken = taken.union(mn)
     pa = spatial(W, "path_parts").clip(boxb).difference(taken).intersection(box)
     if not pa.is_empty:
-        add_area(mb, W, pa, "bk_path", grid=8.0)
+        add_area(mb, W, pa, "bk_path", grid=8.0, clip=lowered)
     taken = taken.union(pa)
     # ---- land cover & default terrain ----
     rest = box.difference(taken)
@@ -597,7 +610,7 @@ def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:
         rest = rest.difference(water)
         beach = rest.intersection(water.buffer(9.0)) if not sea.intersection(boxb).is_empty else shapely.Polygon()
         if not beach.is_empty:
-            add_area(mb, W, beach, "bk_sand", grid=8.0)
+            add_area(mb, W, beach, "bk_sand", grid=8.0, clip=lowered)
             rest = rest.difference(beach)
     tree = _cover_index(W)
     hits = sorted(tree.query(box, predicate="intersects"), reverse=True)
@@ -608,10 +621,10 @@ def build_tile(W: World, ix: int, iy: int) -> MeshBuilder:
         part = rest.intersection(poly)
         if part.is_empty or part.area < 1.0:
             continue
-        add_area(mb, W, part, mat, grid=11.0)
+        add_area(mb, W, part, mat, grid=11.0, clip=lowered)
         rest = rest.difference(poly)
     if not rest.is_empty and rest.area > 0.5:
-        add_area(mb, W, rest, "bk_soil", grid=11.0)
+        add_area(mb, W, rest, "bk_soil", grid=11.0, clip=lowered)
     return mb
 
 

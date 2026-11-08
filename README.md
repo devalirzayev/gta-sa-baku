@@ -29,8 +29,8 @@ oyunçunun öz oyunundan götürülür.)
 * Mağaza və market adları (Bravo, Araz, Bazarstore, apteklər, banklar, kafelər ... OSM/Overture
   məlumatından real adlarla), mavi küçə adı lövhələri, zebra keçidləri.
 * Azərbaycan yol nişanları (STOP, yol ver, piyada keçidi, giriş qadağandır, sürət həddi, əsas yol,
-  dairəvi hərəkət, avtobus dayanacağı, metro "M" ...) — vanilla nişanlar kimi sındırıla bilir.
-* Svetoforlar (AI fazası ilə görünən faza eynidir), küçə işıqları, ağaclar (40 000+), avtobus
+  dairəvi hərəkət, avtobus dayanacağı, metro "M" ...) — maşın vuranda vanilla nişanlar kimi yıxılır.
+* Svetoforlar (AI fazası ilə görünən faza eynidir), küçə işıqları, ağaclar (30 000+), avtobus
   dayanacaqları, skamyalar, həyətlərdə və dayanacaqlarda park olunmuş maşınlar.
 * Trafik (maşın + piyada), radar xəritəsi, rayon adları, su (Xəzər, Böyükşor, Qanlı göl),
   sərbəst gəzinti üçün öz `main.scm`.
@@ -72,6 +72,23 @@ python3 -m tools.build.props && python3 -m tools.build.build_signs && python3 -m
 python3 -m tools.build.package && python3 -m tools.validate
 python3 -m tools.release                          # split zip in release/
 ```
+
+`tools/validate.py` re-reads the packaged files and checks them against the engine limits of the
+original 1.0 executable (no limit adjuster needed). Current build:
+
+| limit (SA 1.0) | Baku, worst case | vanilla, same measure |
+|---|---|---|
+| building pool 13 000 | 10 668 (3 656 permanent + 6 627 streamed + 385 interiors) | — |
+| dummy pool 2 500 (object.dat props loaded at once) | 1 710 | 1 616 + text IPLs |
+| double-link sector nodes 3 200 | 2 566 | — |
+| car generators 500 (loaded at once) | 440 | 128 + script |
+| visible entity list 1 000 (max draw distance, 90° FOV) | 484 | 259 |
+| visible LOD list 1 000 | 247 | 642 |
+| collision triangles per vehicle sphere (`collTrisB[600]`) | 230 (r = 12), 467 (r = 20) | — |
+| IplEntityIndexArrays 40, gpLoadedBuildings 4 096 per text IPL, model info slots 14 000 | 28, 1 152, ~5 400 | — |
+
+Up to a 3 × 3 window of the 500-unit stream cells is loaded at once (IPL bounding box + 350);
+the validator simulates it exactly. Details in `docs/notes/props.md`.
 
 Engine research notes (all with sources from the reverse-engineered game code) are in
 `docs/notes/`: paths, SCM, data files, SA model catalog, props/signage/landmarks/parked cars

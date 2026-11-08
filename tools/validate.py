@@ -424,6 +424,7 @@ def main(dist="dist/Baku_SA"):
     print("paths:", res if not isinstance(res, tuple) else res[:2])
     # CTrain::InitTrains reads data\paths\tracks*.dat (and again after every save load)
     from tools.gta import tracks as TR
+    n_err = len(ERR)
     for k, name in TR.TRACK_FILES.items():
         fn = os.path.join(F, "data", "paths", name)
         if not os.path.exists(fn):
@@ -439,6 +440,7 @@ def main(dist="dist/Baku_SA"):
                 warn(f"{name}: track nodes inside the world")
         except Exception as e:      # TrackError or a parse error
             err(f"{name}: {e}")
+    print(f"tracks: data/paths/tracks*.dat {'ok' if len(ERR) == n_err else 'ERRORS'}")
     radars = [f for f in os.listdir(G) if re.fullmatch(r"radar\d+\.txd", f)]
     if len(radars) != 144:
         err(f"{len(radars)} radar txds")
