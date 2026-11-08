@@ -142,11 +142,16 @@ def main(dist="dist/Baku_SA"):
                 if m.get("groups") and len(m["groups"]) > 1200:
                     err(f"{m['name']}: {len(m['groups'])} face groups")
     for mid, (nm, tx, ddist, fl, src) in defs.items():
-        if src == "baku.ide" and nm.startswith("bk_t"):
+        if src == "baku.ide":
+            # every custom model needs a CColModel (CEntity::GetBoundRect dereferences it), at least bounds
             if nm.lower() not in col_models:
-                err(f"{nm}: no collision")
+                err(f"{nm}: no collision model")
             elif col_models[nm.lower()][1]["model_id"] != mid:
                 err(f"{nm}: col model id {col_models[nm.lower()][1]['model_id']} != {mid}")
+    # vanilla models keep the collision entries of the vanilla col files we do not replace
+    vanilla_cols = json.load(open("data/sa/col_contents.json"))
+    replaced = {f.lower() for f in os.listdir(G) if f.endswith(".col")}
+    vanilla_col_names = {n.lower() for f, names in vanilla_cols.items() if f.lower() not in replaced for n in names}
     print(f"COL: {len(col_models)} collision models in {sum(1 for f in os.listdir(G) if f.endswith('.col'))} replaced col files")
     # ------------------------------------------------------------ IPLs
     allowed = set(defs) | vanilla_ids
@@ -181,6 +186,7 @@ def main(dist="dist/Baku_SA"):
     blk_sta = np.zeros((NC, NC), int)
     blk_dyn = np.zeros((NC, NC), int)
     dyn_xy = []
+    stream_by_grp = {}
     for fn in os.listdir(G):
         if not fn.endswith(".ipl"):
             continue
@@ -204,8 +210,37 @@ def main(dist="dist/Baku_SA"):
             else:
                 blk_sta[cx, cy] += 1
         stream_counts[stem] = len(insts)
+        stream_by_grp.setdefault(grp, []).extend(insts)
         if len(stem) > 17:
             err(f"IPL slot name too long {stem}")
+    # collision model available for every placed instance (own entry, or a LOD with exactly one child)
+    id_name = {int(r.id): str(r.name).lower() for r in models.itertuples()}
+    for mid, (nm, *_rest) in defs.items():
+        id_name[mid] = nm.lower()
+    children = Counter()
+    for stem, insts in text_inst.items():
+        for i in insts:
+            if i.lod >= 0:
+                children[(stem, i.lod)] += 1
+    for grp, insts in stream_by_grp.items():
+        for i in insts:
+            if i.lod >= 0:
+                children[(grp, i.lod)] += 1
+
+    def has_col(mid):
+        nm = id_name.get(mid, "")
+        return nm in col_models or nm in vanilla_col_names
+    nocol = Counter()
+    for stem, insts in text_inst.items():
+        for k, i in enumerate(insts):
+            if not has_col(i.model_id) and children[(stem, k)] != 1:
+                nocol[id_name.get(i.model_id, str(i.model_id))] += 1
+    for grp, insts in stream_by_grp.items():
+        for i in insts:
+            if not has_col(i.model_id):
+                nocol[id_name.get(i.model_id, str(i.model_id))] += 1
+    for nm, n in nocol.most_common(20):
+        err(f"model {nm} placed {n}x without a collision model (crash in CWorld::Add)")
     # a player can be inside the (200-unit inflated) bounding boxes of at most a 2x2 block of cells
     def block_max(a):
         return max(int(a[i:i + 2, j:j + 2].sum()) for i in range(NC - 1) for j in range(NC - 1))

@@ -56,6 +56,7 @@ class ColModel:
     spheres: list = field(default_factory=list)  # [(center3, radius, material)]
     shadow_vertices: np.ndarray = None
     shadow_faces: np.ndarray = None
+    bounds: tuple | None = None          # (min3, max3) extra extent, e.g. for volume-less models
 
 
 def _quantize(v: np.ndarray) -> np.ndarray:
@@ -125,6 +126,8 @@ def write_col3(m: ColModel) -> bytes:
     if shadow:
         sv_q = _quantize(m.shadow_vertices)
         pts.append(sv_q.astype(np.float64) / 128.0)
+    if m.bounds is not None:
+        pts.append(np.array([m.bounds[0], m.bounds[1]], dtype=np.float64))
     if pts:
         allp = np.concatenate(pts)
         bmin, bmax = allp.min(axis=0), allp.max(axis=0)

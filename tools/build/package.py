@@ -24,7 +24,7 @@ import shapely
 from tools.build import ground, ids, build_data as BD
 from tools.geo.proj import WORLD
 from tools.gta import ipl as IPL, zones as ZN, water as WT, tracks as TR, radar as RD
-from tools.rw import img, col, txd
+from tools.rw import img, col, txd, dff
 
 DIST = "dist"
 MODDIR = os.path.join(DIST, "Baku_SA")
@@ -211,14 +211,27 @@ def main():
         ox, oy, _ = t["origin"]
         regions[(int((ox + WORLD) // COL_REGION), int((oy + WORLD) // COL_REGION))].append(t)
     assert len(regions) <= len(free), (len(regions), len(free))
-    for (rx, ry), (key, lst) in zip(sorted(regions), [(k, regions[k]) for k in sorted(regions)]):
-        pass
-    for k, key in enumerate(sorted(regions)):
+    # Every placed model needs a CColModel: CWorld::Add -> CEntity::GetBoundRect dereferences it.
+    # A LOD with several children does not inherit one in LinkLods (0x5B51E0), so the ground LOD
+    # tiles get bounds-only COL3 entries (no volumes -> SetUsesCollision(false)).
+    lod_cols = defaultdict(list)
+    for L in lods:
+        g = dff.read_dff(open(os.path.join(GROUND, L["name"] + ".dff"), "rb").read())["geometries"][0]
+        V = np.asarray(g["vertices"], float)
+        ox, oy, _ = L["origin"]
+        key = (int((ox + WORLD) // COL_REGION), int((oy + WORLD) // COL_REGION))
+        lod_cols[key].append(col.write_col3(col.ColModel(L["name"], L["id"], bounds=(V.min(0), V.max(0)))))
+    keys = sorted(set(regions) | set(lod_cols))
+    assert len(keys) <= len(free), (len(keys), len(free))
+    for k, key in enumerate(keys):
         cname = free[k]
-        blob = b"".join(open(os.path.join(GROUND, t["name"] + ".col"), "rb").read() for t in regions[key])
+        blob = b"".join(open(os.path.join(GROUND, t["name"] + ".col"), "rb").read() for t in regions.get(key, []))
+        blob += b"".join(lod_cols.get(key, []))
         with open(os.path.join(out_img, cname), "wb") as f:
             f.write(blob)
-        manifest["cols"][cname] = [t["name"] for t in regions[key]]
+        manifest["cols"][cname] = [t["name"] for t in regions.get(key, [])] + \
+            [f"(bounds) {L['name']}" for L in lods
+             if (int((L['origin'][0] + WORLD) // COL_REGION), int((L['origin'][1] + WORLD) // COL_REGION)) == key]
 
     # ---------------------------------------------------------------- baku.img
     files = []
