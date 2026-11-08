@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Baku SA preview</title>
+<style>html,body{margin:0;background:#9db8d0;overflow:hidden}</style></head>
+<body>
+<script type="importmap">{"imports":{"three":"./three.module.js"}}</script>
+<script type="module">
+import * as THREE from 'three';
+const params = new URLSearchParams(location.search);
+const scene = new THREE.Scene();
+const W = +(params.get('w')||1600), H = +(params.get('h')||900);
+const renderer = new THREE.WebGLRenderer({antialias:true, preserveDrawingBuffer:true});
+renderer.setSize(W, H);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+const data = await (await fetch(params.get('scene')||'scene.json')).json();
+scene.background = new THREE.Color(data.sky || '#9db8d0');
+if (data.fog) scene.fog = new THREE.Fog(data.sky || '#9db8d0', data.fog[0], data.fog[1]);
+const loader = new THREE.TextureLoader();
+const texCache = {};
+function tex(name){
+  if(!texCache[name]){
+    const t = loader.load('tex/'+name+'.png');
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 8; texCache[name]=t;
+  }
+  return texCache[name];
+}
+for (const m of data.meshes){
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(m.p, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(m.uv, 2));
+  if (m.c) g.setAttribute('color', new THREE.Float32BufferAttribute(m.c, 3));
+  g.setIndex(m.i);
+  const mat = new THREE.MeshBasicMaterial({map: m.t ? tex(m.t) : null, color: m.col||0xffffff,
+      vertexColors: !!m.c, side: THREE.FrontSide, transparent: !!m.alpha, alphaTest: m.alpha?0.5:0});
+  const mesh = new THREE.Mesh(g, mat);
+  if (m.pos) mesh.position.set(...m.pos);
+  if (m.q) mesh.quaternion.set(...m.q);
+  scene.add(mesh);
+}
+// GTA uses Z-up; three uses Y-up: rotate the world
+scene.rotation.x = -Math.PI/2;
+const cam = new THREE.PerspectiveCamera(data.fov||60, W/H, 0.5, 6000);
+const [ex,ey,ez] = data.eye, [tx,ty,tz] = data.target;
+cam.position.set(ex, ez, -ey); cam.lookAt(tx, tz, -ty);
+await new Promise(r=>setTimeout(r, 300));
+let pending = Object.values(texCache).filter(t=>!t.image).length, tries=0;
+while (Object.values(texCache).some(t=>!t.image || !t.image.complete) && tries++ < 100) await new Promise(r=>setTimeout(r,100));
+renderer.render(scene, cam);
+window.done = true;
+</script></body></html>
