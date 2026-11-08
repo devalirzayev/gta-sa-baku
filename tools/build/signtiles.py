@@ -231,9 +231,10 @@ def style_for(p):
 class Facades:
     """Street-facing edges of the placed SA building footprints."""
 
-    def __init__(self, ctx, blds):
+    def __init__(self, ctx, blds, exclude=None):
         self.ctx = ctx
-        self.blds = [b for b in blds if b.get("poly") is not None and not b["poly"].is_empty]
+        self.blds = [b for b in blds if b.get("poly") is not None and not b["poly"].is_empty
+                     and (exclude is None or not b["poly"].intersects(exclude))]
         self.polys = [b["poly"] for b in self.blds]
         self.tree = shapely.STRtree(self.polys)
         self.used = defaultdict(list)       # (building index, edge index) -> [(a, b, row)]
@@ -310,8 +311,8 @@ def _measure(text, sub, font_name, h):
     return w
 
 
-def collect_boards(ctx, blds, verbose=True):
-    fac = Facades(ctx, blds)
+def collect_boards(ctx, blds, verbose=True, exclude=None):
+    fac = Facades(ctx, blds, exclude)
     places = select_places()
     boards = []
     rng = np.random.default_rng(5)
@@ -365,10 +366,10 @@ def short_street(name):
     return name
 
 
-def collect_plates(ctx, blds, verbose=True):
+def collect_plates(ctx, blds, verbose=True, exclude=None):
     """Blue street-name plates on the corner buildings of junctions (one per street and corner)."""
     W = ctx.W
-    fac = Facades(ctx, blds)
+    fac = Facades(ctx, blds, exclude)
     lay = W.lay
     plates = []
     last = defaultdict(list)
@@ -608,9 +609,11 @@ def _orient(V, T, normal):
     return T
 
 
-def build_tiles(ctx, blds, lights, crossings, verbose=True):
-    """-> list of dicts(name, id, txd, ix, iy, origin, dff, col, txd_bytes, n_boards)"""
-    boards = collect_boards(ctx, blds, verbose) + collect_plates(ctx, blds, verbose)
+def build_tiles(ctx, blds, lights, crossings, verbose=True, exclude=None):
+    """-> list of dicts(name, id, txd, ix, iy, origin, dff, col, txd_bytes, n_boards).
+    exclude: area whose buildings get no boards (landmark footprints: their SA stand-ins are
+    replaced by custom models)."""
+    boards = collect_boards(ctx, blds, verbose, exclude) + collect_plates(ctx, blds, verbose, exclude)
     zebras = collect_zebras(ctx, lights, crossings)
     per = defaultdict(lambda: ([], []))
     for b in boards:

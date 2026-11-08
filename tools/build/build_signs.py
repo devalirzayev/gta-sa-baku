@@ -43,7 +43,12 @@ def main(verbose=True):
             f.write(line + "\n")
     # per-tile signage
     ctx = PR.Ctx(W, blds)
-    tiles = SGT.build_tiles(ctx, blds, lights, crossings, verbose)
+    exclude = None
+    lmj = "build/out/landmarks/landmarks.json"
+    if os.path.exists(lmj):
+        import shapely
+        exclude = shapely.union_all([shapely.from_wkt(w).buffer(1.5) for w in json.load(open(lmj))["footprints"].values()])
+    tiles = SGT.build_tiles(ctx, blds, lights, crossings, verbose, exclude=exclude)
     for t in tiles:
         open(os.path.join(OUT, t["name"] + ".dff"), "wb").write(t["dff"])
         open(os.path.join(OUT, t["name"] + ".col"), "wb").write(t["col"])

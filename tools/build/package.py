@@ -30,6 +30,7 @@ DIST = "dist"
 MODDIR = os.path.join(DIST, "Baku_SA")
 GROUND = "build/out/ground"
 SIGNS = "build/out/signs"
+LANDMARKS = "build/out/landmarks"
 CELL = 500.0
 NC = int(2 * WORLD / CELL)      # 12 x 12 stream cells
 
@@ -125,6 +126,16 @@ def main():
 
     # ---------------------------------------------------------------- buildings -> cells
     blds, usage = pickle.load(open("data/cache/buildings.pkl", "rb"))
+    lmk = json.load(open(os.path.join(LANDMARKS, "landmarks.json"))) if os.path.exists(os.path.join(LANDMARKS, "landmarks.json")) \
+        else {"models": [], "footprints": {}}
+    if lmk["footprints"]:
+        lm_area = shapely.union_all([shapely.from_wkt(w).buffer(1.5) for w in lmk["footprints"].values()])
+        n0 = len(blds)
+        blds = [b for b in blds if b.get("poly") is None or not b["poly"].intersects(lm_area)]
+        usage = defaultdict(int)
+        for b in blds:
+            usage[b["id"]] += 1
+        manifest["landmarks_replaced_buildings"] = n0 - len(blds)
     cells = defaultdict(list)
     for b in blds:
         cx = min(NC - 1, max(0, int((b["x"] + WORLD) // CELL)))
@@ -172,6 +183,14 @@ def main():
         cy = min(NC - 1, max(0, int((oy + WORLD) // CELL)))
         stream_insts[cell_name[(cx, cy)][1]].append(IPL.Inst(t["id"], t["name"], ox, oy, oz, 0.0))
     manifest["sign_tiles"] = len(sg["tiles"])
+    for m in lmk["models"]:
+        ox, oy, oz = m["origin"]
+        cx = min(NC - 1, max(0, int((ox + WORLD) // CELL)))
+        cy = min(NC - 1, max(0, int((oy + WORLD) // CELL)))
+        grp, sname = cell_name[(cx, cy)]
+        group_lods[grp].append(IPL.Inst(m["lod_id"], m["lod_name"], ox, oy, oz, 0.0))
+        stream_insts[sname].append(IPL.Inst(m["id"], m["name"], ox, oy, oz, 0.0, lod=len(group_lods[grp]) - 1))
+    manifest["landmarks"] = [m["name"] for m in lmk["models"]]
     # text IPLs: ground (baku.ipl) + one per vanilla group name
     text_ipls = ["baku"]
     with open(os.path.join(maps, "baku.ipl"), "w", newline="") as f:
@@ -203,6 +222,9 @@ def main():
         objs.append(IPL.ObjDef(r["id"], r["name"], r["txd"], r["dd"], 0))
     for t in sg["tiles"]:
         objs.append(IPL.ObjDef(t["id"], t["name"], t["txd"], t["dd"], 0))
+    for m in lmk["models"]:
+        objs.append(IPL.ObjDef(m["id"], m["name"], m["txd"], 299, 0))
+        objs.append(IPL.ObjDef(m["lod_id"], m["lod_name"], m["txd"], 1800, 0))
     with open(os.path.join(maps, "baku.ide"), "w", newline="") as f:
         f.write(IPL.ide_text(objs, comment="Baku map - custom models (ground tiles, ground LODs, road signs, "
                                            "shop boards / street plates / zebra crossings per tile)"))
@@ -244,6 +266,11 @@ def main():
         ox, oy, _ = t["origin"]
         key = (int((ox + WORLD) // COL_REGION), int((oy + WORLD) // COL_REGION))
         sg_cols[key].append((t["name"], open(os.path.join(SIGNS, t["name"] + ".col"), "rb").read()))
+    for m in lmk["models"]:
+        ox, oy, _ = m["origin"]
+        key = (int((ox + WORLD) // COL_REGION), int((oy + WORLD) // COL_REGION))
+        for nm in (m["name"], m["lod_name"]):
+            sg_cols[key].append((nm, open(os.path.join(LANDMARKS, nm + ".col"), "rb").read()))
     keys = sorted(set(regions) | set(lod_cols) | set(sg_cols))
     assert len(keys) + 1 <= len(free), (len(keys), len(free))
     for k, key in enumerate(keys):
@@ -279,6 +306,12 @@ def main():
     for t in sg["tiles"]:
         files.append((t["name"] + ".dff", open(os.path.join(SIGNS, t["name"] + ".dff"), "rb").read()))
         files.append((t["txd"] + ".txd", open(os.path.join(SIGNS, t["txd"] + ".txd"), "rb").read()))
+    for m in lmk["models"]:
+        for nm in (m["name"], m["lod_name"]):
+            files.append((nm + ".dff", open(os.path.join(LANDMARKS, nm + ".dff"), "rb").read()))
+    if lmk["models"]:
+        tx = lmk["models"][0]["txd"]
+        files.append((tx + ".txd", open(os.path.join(LANDMARKS, tx + ".txd"), "rb").read()))
     os.makedirs(os.path.join(out_files, "models"), exist_ok=True)
     img.write_img(os.path.join(out_files, "models", "baku.img"), files)
 

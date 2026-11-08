@@ -183,8 +183,16 @@ def build_network(W, verbose=True):
                 if verbose:
                     print("signal fail", c, ex)
     # ---------------- peds ----------------
-    ped_ends = defaultdict(list)    # junction graph node -> ped node indices near it
+    # sidewalk polylines along both sides of every ground-level ribbon; their ends are collected per
+    # layout junction (all member nodes of a dual-carriageway junction together) or per plain node
+    ped_ends = defaultdict(list)
     lay = W.lay
+
+    def end_key(node):
+        j = lay.node_junction.get(node)
+        return ("j", j) if j is not None else ("n", node)
+
+    sidewalk_ids = []
     for r in lay.ribbons.values():
         e = r.edge
         s_full = profiles.arclen(e.pts)
@@ -203,32 +211,56 @@ def build_network(W, verbose=True):
             z = ground.H_at(W, line[idx, 0], line[idx, 1]) + ground.KERB
             ids = [net.add_ped_node(float(line[k, 0]), float(line[k, 1]), float(zz), width=max(0.6, sw * 0.35))
                    for k, zz in zip(idx, z)]
+            sidewalk_ids += ids
             if len(ids) >= 2:
                 net.add_ped_polyline(ids)
-            ped_ends[e.u].append(ids[0])
-            ped_ends[e.v].append(ids[-1])
-    # connect sidewalk ends around each junction (ring by angle) -> crossings auto-detected
-    for gn, ends in ped_ends.items():
-        if len(ends) < 2 or gn not in g.nodes:
+            ped_ends[end_key(e.u)].append(ids[0])
+            ped_ends[end_key(e.v)].append(ids[-1])
+    for key, ends in ped_ends.items():
+        if len(ends) < 2:
             continue
-        c = g.nodes[gn]
-        ang = sorted(ends, key=lambda i: math.atan2(net.ped_nodes[i].y - c[1], net.ped_nodes[i].x - c[0]))
-        for a, b in zip(ang, ang[1:] + ang[:1]):
-            if a == b:
-                continue
-            pa, pb = net.ped_nodes[a], net.ped_nodes[b]
-            if math.hypot(pa.x - pb.x, pa.y - pb.y) < 60:
-                net.add_ped_link(a, b)
-    # footways / park paths
+        EP = np.array([[net.ped_nodes[i].x, net.ped_nodes[i].y] for i in ends])
+        if key[0] == "j":
+            # ring by angle around the junction: corner links + crossings over every arm mouth
+            c = np.array(lay.junctions[key[1]].polygon.centroid.coords[0])
+            order = np.argsort(np.arctan2(EP[:, 1] - c[1], EP[:, 0] - c[0]))
+            ring = [ends[i] for i in order]
+            for a, b in zip(ring, ring[1:] + ring[:1]):
+                pa, pb = net.ped_nodes[a], net.ped_nodes[b]
+                if a != b and math.hypot(pa.x - pb.x, pa.y - pb.y) < 70:
+                    net.add_ped_link(a, b)
+        else:
+            # plain continuation node: join the ends on the same side of the road only
+            used = set()
+            for i in range(len(ends)):
+                d = np.hypot(*(EP - EP[i]).T)
+                d[i] = np.inf
+                j = int(np.argmin(d))
+                if d[j] < 4.5 and (min(i, j), max(i, j)) not in used:
+                    used.add((min(i, j), max(i, j)))
+                    net.add_ped_link(ends[i], ends[j])
+    # footways, park paths, steps and the OSM crosswalk ways (sidewalk ways are ours)
+    fw_ends = []
     for e in g.edges.values():
-        if e.cls not in ("footway", "path", "pedestrian", "steps") or e.subclass in ("sidewalk", "crosswalk"):
+        if e.cls not in ("footway", "path", "pedestrian", "steps", "cycleway") or e.subclass == "sidewalk":
             continue
-        if e.length < 8 or not ((np.abs(e.pts[:, 0]) < LIM) & (np.abs(e.pts[:, 1]) < LIM)).all():
+        if e.length < 1.0 or not ((np.abs(e.pts[:, 0]) < LIM) & (np.abs(e.pts[:, 1]) < LIM)).all():
             continue
         idx = _simplify_idx(e.pts, tol=1.5, max_len=30.0)
         z = ground.H_at(W, e.pts[idx, 0], e.pts[idx, 1]) + ground.KERB
         ids = [net.add_ped_node(float(e.pts[k, 0]), float(e.pts[k, 1]), float(zz), width=1.0) for k, zz in zip(idx, z)]
-        net.add_ped_polyline(ids)
+        if len(ids) >= 2:
+            net.add_ped_polyline(ids)
+        fw_ends += [ids[0], ids[-1]]
+    # footway ends near a sidewalk: join them (OSM paths stop at the OSM sidewalk, ours is nearby)
+    if sidewalk_ids and fw_ends:
+        sxy = np.array([[net.ped_nodes[i].x, net.ped_nodes[i].y] for i in sidewalk_ids])
+        stree = cKDTree(sxy)
+        for i in fw_ends:
+            pn = net.ped_nodes[i]
+            d, k = stree.query([pn.x, pn.y])
+            if 0.6 < d < 7.0 and abs(net.ped_nodes[sidewalk_ids[k]].z - pn.z) < 1.5:
+                net.add_ped_link(i, sidewalk_ids[k])
     if verbose:
         print(f"paths: {len(net.car_nodes)} car nodes, {len(net.car_links)} car links, {len(signalised)} signalised junctions, "
               f"{len(net.ped_nodes)} ped nodes, {len(net.ped_links)} ped links")
@@ -305,6 +337,77 @@ def sanitize(net):
     return net
 
 
+def connect_ped_components(net, max_d=25.0, min_keep=10, verbose=True):
+    """Bridge separate ped networks (park path systems, sidewalks cut off by structures) to the
+    largest one with one short link each (crossing flags are added automatically where the link
+    crosses a road); tiny leftovers that stay isolated are removed."""
+    n = len(net.ped_nodes)
+    if n == 0:
+        return
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    deg = np.zeros(n, int)
+    for l in net.ped_links:
+        deg[l.a] += 1
+        deg[l.b] += 1
+        ra, rb = find(l.a), find(l.b)
+        if ra != rb:
+            parent[ra] = rb
+    xy = np.array([[p.x, p.y] for p in net.ped_nodes])
+    z = np.array([p.z for p in net.ped_nodes])
+    comps = defaultdict(list)
+    for i in range(n):
+        if deg[i] > 0:
+            comps[find(i)].append(i)
+    order = sorted(comps, key=lambda r: -len(comps[r]))
+    main = set(comps[order[0]])
+    added = dropped = 0
+    for _ in range(3):                      # a few passes: bridged components help the next ones
+        main_idx = np.array(sorted(main))
+        tree = cKDTree(xy[main_idx])
+        changed = False
+        for r in order[1:]:
+            nodes = comps[r]
+            if not nodes or nodes[0] in main:
+                continue
+            d, k = tree.query(xy[nodes], distance_upper_bound=max_d)
+            best = None
+            for ni, (dd, kk) in enumerate(zip(d, k)):
+                if not np.isfinite(dd):
+                    continue
+                a, b = nodes[ni], int(main_idx[kk])
+                if abs(z[a] - z[b]) > 2.0 or deg[a] >= 8 or deg[b] >= 8:
+                    continue
+                if best is None or dd < best[0]:
+                    best = (dd, a, b)
+            if best is not None:
+                net.add_ped_link(best[1], best[2])
+                deg[best[1]] += 1
+                deg[best[2]] += 1
+                main.update(nodes)
+                added += 1
+                changed = True
+        if not changed:
+            break
+    keep = []
+    gone = set()
+    for r in order[1:]:
+        nodes = comps[r]
+        if nodes[0] not in main and len(nodes) < min_keep:
+            gone.update(nodes)
+            dropped += 1
+    if gone:
+        net.ped_links = [l for l in net.ped_links if l.a not in gone and l.b not in gone]
+    if verbose:
+        print(f"ped components: {len(order)} -> bridged {added}, removed {dropped} tiny ones")
+
+
 def light_approaches(net):
     """Traffic-light approaches of a (sanitised) network: one record per car link with a light."""
     out = []
@@ -326,6 +429,7 @@ def compile_paths(W, out_dir=None, verbose=True):
     import json
     import os
     net = sanitize(build_network(W, verbose))
+    connect_ped_components(net, verbose=verbose)
     lights = light_approaches(net)
     cp = P.compile_network(net, max_link_length=100.0, drop_isolated=True)
     if verbose:

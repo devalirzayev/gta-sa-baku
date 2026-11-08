@@ -17,7 +17,10 @@ class MeshBuilder:
         self.parts = defaultdict(list)   # material -> list of (V, UV, T, day, night)
         self.col = []                    # list of (V, T, surface, light)
 
-    def add(self, mat, V, UV, T, shade=None, night=None, surface=None, light=None, collide=True):
+    def add(self, mat, V, UV, T, shade=None, night=None, surface=None, light=None, collide=True,
+            day_rgb=None, night_rgb=None):
+        """shade/night: brightness factors for the default day/night prelight colours;
+        day_rgb/night_rgb: explicit colours (3,) or (N,3) overriding them (e.g. lit windows)."""
         V = np.asarray(V, np.float64)
         T = np.asarray(T, np.int64)
         if len(T) == 0:
@@ -32,12 +35,20 @@ class MeshBuilder:
                 shade = np.asarray(shade)[used]
             if night is not None and np.ndim(night) > 0:
                 night = np.asarray(night)[used]
+            if day_rgb is not None and np.ndim(day_rgb) > 1:
+                day_rgb = np.asarray(day_rgb)[used]
+            if night_rgb is not None and np.ndim(night_rgb) > 1:
+                night_rgb = np.asarray(night_rgb)[used]
             T = inv.reshape(-1, 3)
         n = len(V)
         sh = np.ones(n) if shade is None else np.broadcast_to(np.asarray(shade, np.float64), (n,))
         day = np.clip(DAY[None, :3] * sh[:, None], 0, 255)
+        if day_rgb is not None:
+            day = np.clip(np.broadcast_to(np.asarray(day_rgb, np.float64), (n, 3)) * sh[:, None], 0, 255)
         nshade = sh if night is None else np.broadcast_to(np.asarray(night, np.float64), (n,))
         ngt = np.clip(NIGHT[None, :3] * nshade[:, None], 0, 255)
+        if night_rgb is not None:
+            ngt = np.clip(np.broadcast_to(np.asarray(night_rgb, np.float64), (n, 3)), 0, 255)
         self.parts[mat].append((V, np.asarray(UV, np.float64), T, day, ngt))
         if collide and surface is not None:
             lt = col.light_byte(15, 7) if light is None else light
