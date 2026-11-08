@@ -216,7 +216,7 @@ def build_all(W, out_dir="build/out/rail", verbose=True):
     for t in tiles:
         open(os.path.join(out_dir, t["name"] + ".dff"), "wb").write(t["dff"])
         open(os.path.join(out_dir, t["name"] + ".col"), "wb").write(t["col"])
-        meta.append({k: t[k] for k in ("name", "id", "txd", "origin")} | {"dd": 250.0})
+        meta.append({k: t[k] for k in ("name", "id", "txd", "origin")} | {"dd": 290.0})
     tex = [TXD.texture_native("bk_rl_ballast", tex_ballast(), encoding="DXT1"),
            TXD.texture_native("bk_rl_steel", tex_steel(), encoding="DXT1"),
            TXD.texture_native("bk_rl_gravel", tex_gravel(), encoding="DXT1")]

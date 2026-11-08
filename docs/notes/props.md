@@ -84,7 +84,7 @@ IPL rotation: quaternion (0, 0, −sin(h/2), cos(h/2)) for a CCW heading h; the 
 * Road signs: 14 models (`bk_rs_*`, shared TXD `bk_rsign`), plate faces −y like the traffic
   lights, pivot at mid height like vanilla bussign1.
 * Shop boards / street plates / zebra crossings: one merged static model per 250-unit tile
-  (`bk_sgXXYY`, dd 280 < 300 so it stays a normal building).  Board text is rendered with the
+  (`bk_sgXXYY`, dd 290 < 300 so it stays a normal building).  Board text is rendered with the
   vendored fonts in `tools/tex/fonts` (Azerbaijani ə ğ ı ş supported; `az_upper` handles İ/I).
 * Landmarks: HD model (dd 299, collision) + LOD (dd 1800).  Heights use LANDMARK_SCALE 0.75.
   SOCAR Tower, the TV tower and Baku Eye lie outside the ±3000 world (x = 3309, y = −3462,

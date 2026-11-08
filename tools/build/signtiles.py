@@ -2,7 +2,7 @@
 Overture places data), blue street-name plates at junction corners and zebra crossings.
 
 One static model per 250 x 250 ground tile that has signage: bk_sgXXYY (TXD bk_sgtXXYY with one
-atlas texture).  Draw distance 280 from the tile centre (< 300: stays a normal building, every
+atlas texture).  Draw distance 290 from the tile centre (< 300: stays a normal building, every
 point of the tile is within 177 units of the centre).  The model has a bounds-only collision entry
 (no volumes): CEntity::GetBoundRect needs a CColModel, the engine then disables collision.
 
@@ -33,7 +33,7 @@ from tools.build.signs import _sample
 TILE = ground.TILE
 NT = ground.NT
 SG_BASE = 11682               # free vanilla id range 11682..12799
-SG_DD = 280.0
+SG_DD = 290.0
 PX = 44                       # board texture pixels per unit
 PX_PLATE = 84                 # street-name plates are small: more pixels per unit
 ATLAS_W = 1024
