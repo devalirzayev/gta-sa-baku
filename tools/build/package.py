@@ -201,9 +201,17 @@ def main():
             f.write(IPL.text_ipl(group_lods.get(grp, []),
                                  comment=f"Baku map - LOD instances for the {grp.lower()}_stream* cells"))
     manifest["text_ipls"] = text_ipls
+    # parked cars (car generators) per cell
+    stream_cars = defaultdict(list)
+    if os.path.exists("data/cache/parked_cars.pkl"):
+        for c in pickle.load(open("data/cache/parked_cars.pkl", "rb")):
+            cx = min(NC - 1, max(0, int((c.x + WORLD) // CELL)))
+            cy = min(NC - 1, max(0, int((c.y + WORLD) // CELL)))
+            stream_cars[cell_name[(cx, cy)][1]].append(c)
+    manifest["parked_car_generators"] = sum(len(v) for v in stream_cars.values())
     # binary stream IPLs (all vanilla exterior names + special ones -> replace inside gta3.img)
     for grp, sname in names:
-        data = IPL.binary_ipl(stream_insts.get(sname, []))
+        data = IPL.binary_ipl(stream_insts.get(sname, []), stream_cars.get(sname, []))
         with open(os.path.join(out_img, sname + ".ipl"), "wb") as f:
             f.write(data)
         manifest["stream_ipls"][sname] = len(stream_insts.get(sname, []))

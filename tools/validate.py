@@ -198,6 +198,7 @@ def main(dist="dist/Baku_SA"):
     blk_dyn = np.zeros((NC, NC), int)
     dyn_xy = []
     stream_by_grp = {}
+    blk_car = np.zeros((12, 12), int)
     for fn in os.listdir(G):
         if not fn.endswith(".ipl"):
             continue
@@ -222,6 +223,15 @@ def main(dist="dist/Baku_SA"):
                 blk_sta[cx, cy] += 1
         stream_counts[stem] = len(insts)
         stream_by_grp.setdefault(grp, []).extend(insts)
+        for c in cars:
+            if abs(c.x) > 2995 or abs(c.y) > 2995:
+                err(f"{fn}: car generator outside the world")
+                continue
+            if not (-7.0 < c.angle < 7.0):
+                err(f"{fn}: car generator angle {c.angle} is not in radians")
+            if c.model_id != -1 and not (400 <= c.model_id <= 611):
+                err(f"{fn}: car generator model {c.model_id}")
+            blk_car[min(NC - 1, int((c.x + 3000) // CELL)), min(NC - 1, int((c.y + 3000) // CELL))] += 1
         if len(stem) > 17:
             err(f"IPL slot name too long {stem}")
     # collision model available for every placed instance (own entry, or a LOD with exactly one child)
@@ -256,6 +266,10 @@ def main(dist="dist/Baku_SA"):
     def block_max(a):
         return max(int(a[i:i + 2, j:j + 2].sum()) for i in range(NC - 1) for j in range(NC - 1))
     peak = block_max(blk_sta)
+    peak_car = block_max(blk_car)
+    print(f"car generators: {int(blk_car.sum())} streamed, densest 2x2 block {peak_car}/500 (CTheCarGenerators array)")
+    if peak_car > 480:
+        err(f"{peak_car} car generators in a 2x2 block of cells (array of 500)")
     peak_dyn = block_max(blk_dyn)
     est_pool = n_text - n_text_dyn + peak + 1500      # + vanilla interior text IPLs (estimate)
     print(f"IPL: {n_text} text instances, {sum(stream_counts.values())} streamed in {len(stream_counts)} binary IPLs; "
