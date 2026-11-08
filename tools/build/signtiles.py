@@ -676,26 +676,37 @@ def _shelf(items, width, pad, reserve):
     return pos, y + shelf
 
 
+ATLAS_MAX = 1024        # px; a 1024 x 1024 DXT1 atlas with mip maps is 683 KB of streaming memory
+
+
 def pack_atlas(boards):
-    """Shelf packing into the smallest power-of-two atlas; returns (atlas, white uv, dark uv).
+    """Shelf packing into the smallest power-of-two atlas (at most ATLAS_MAX square: boards of
+    dense tiles are scaled down until they fit); returns (atlas, white uv, dark uv).
     Each board gets b.uv = (u0, v0, u1, v1).  Reserved: white block (zebras) and dark block
     (frames) at the top-left."""
     PAD = 3
-    items = sorted(boards, key=lambda b: -b.img.size[1])
     best = None
-    for width in (128, 256, 512, 1024, 2048):
-        r = _shelf(items, width, PAD, 68)
-        if r is None:
-            continue
-        pos, used = r
-        Hp = 64
-        while Hp < used:
-            Hp *= 2
-        if Hp > 2048:
-            continue
-        key = (width * Hp, abs(math.log2(width / Hp)))
-        if best is None or key < best[0]:
-            best = (key, width, Hp, pos)
+    while best is None:
+        items = sorted(boards, key=lambda b: -b.img.size[1])
+        for width in (128, 256, 512, 1024, 2048):
+            if width > ATLAS_MAX:
+                break
+            r = _shelf(items, width, PAD, 68)
+            if r is None:
+                continue
+            pos, used = r
+            Hp = 64
+            while Hp < used:
+                Hp *= 2
+            if Hp > ATLAS_MAX:
+                continue
+            key = (width * Hp, abs(math.log2(width / Hp)))
+            if best is None or key < best[0]:
+                best = (key, width, Hp, pos)
+        if best is None:
+            for b in boards:
+                w, h = b.img.size
+                b.img = b.img.resize((max(8, int(w * 0.85)), max(8, int(h * 0.85))), Image.LANCZOS)
     _, AW, Hp, placed = best
     atlas = Image.new("RGB", (AW, Hp), (40, 40, 44))
     atlas.paste((246, 246, 240), (1, 1, 32, 32))

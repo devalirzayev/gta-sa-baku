@@ -52,7 +52,7 @@ WASTEBIN = 1347                   # CJ_WASTEBIN (static)
 
 TREES = {
     "street": [(767, 3), (768, 3), (669, 3), (673, 2), (769, 2), (618, 1), (763, 1)],
-    "park": [(700, 3), (691, 2), (715, 3), (772, 2), (777, 1), (726, 1), (617, 1), (768, 2),
+    "park": [(700, 3), (691, 2), (715, 3), (772, 2), (777, 2), (617, 1), (768, 2),
              (766, 2), (764, 1), (770, 2), (661, 1), (660, 1)],
     "forest": [(661, 3), (660, 3), (657, 2), (770, 3), (655, 1), (766, 1), (669, 1), (700, 1)],
     "cemetery": [(766, 4), (764, 3), (765, 3), (770, 1)],
@@ -68,9 +68,16 @@ OUTER_ON_DUAL = {"motorway": 0, "trunk": 0, "primary": 52, "secondary": 52, "ter
                  "residential": 60, "unclassified": 60}
 
 # budgets
-DYN_BLOCK = 1450                  # dynamic instances per 2x2 block of stream cells (1 km^2)
+# A stream IPL stays loaded while the player is inside its bounding box inflated by 350 units
+# (CIplStore::LoadIpl) -> up to a 3 x 3 window of 500-unit cells is loaded at once (validate.py
+# simulates it exactly). Vanilla peaks at 1616 loaded dynamic instances (dummy pool 2500).
+DYN_WINDOW = 1650                 # dynamic instances per 3x3 window of stream cells
 DYN_R100 = 120                    # dynamic instances within 100 units
-STATIC_BLOCK = 2700               # static props (trees, stone benches, bins) per 2x2 block
+STATIC_WINDOW = 4200              # static props (trees, stone benches, bins) per 3x3 window
+# CRenderer::ms_aVisibleEntityPtrs[1000] has no bounds check: trees (draw distance 150, x 1.8 at
+# the maximum draw distance setting) are the densest visible entities -> at most this many per
+# 50-unit world sector (vanilla parks: ~10)
+TREE_SECTOR = 20
 
 BOULEVARD_BOX = (-200.0, -2950.0, 1000.0, -2450.0)
 
@@ -721,6 +728,7 @@ def apply_budgets(props, verbose=True):
     order = sorted(range(len(props)), key=lambda i: (props[i]["prio"], props[i]["rank"], props[i]["r"]))
     blk_dyn = defaultdict(int)
     blk_sta = defaultdict(int)
+    sec_tree = defaultdict(int)
     G = 25.0
     grid = defaultdict(int)
     keep = []
@@ -730,9 +738,9 @@ def apply_budgets(props, verbose=True):
         p = props[i]
         cx = min(NC - 1, max(0, int((p["x"] + WORLD) // CELL)))
         cy = min(NC - 1, max(0, int((p["y"] + WORLD) // CELL)))
-        blocks = [(bx, by) for bx in (cx - 1, cx) for by in (cy - 1, cy)]
+        blocks = [(bx, by) for bx in (cx - 1, cx, cx + 1) for by in (cy - 1, cy, cy + 1)]   # window centres
         if p["dyn"]:
-            if any(blk_dyn[b] >= DYN_BLOCK for b in blocks):
+            if any(blk_dyn[b] >= DYN_WINDOW for b in blocks):
                 dropped[p["kind"]] += 1
                 continue
             gx, gy = int(math.floor(p["x"] / G)), int(math.floor(p["y"] / G))
@@ -748,15 +756,21 @@ def apply_budgets(props, verbose=True):
             for b in blocks:
                 blk_dyn[b] += 1
         else:
-            if any(blk_sta[b] >= STATIC_BLOCK for b in blocks):
+            if any(blk_sta[b] >= STATIC_WINDOW for b in blocks):
                 dropped[p["kind"]] += 1
                 continue
+            if p["kind"] == "tree":
+                sec = (int(math.floor(p["x"] / 50.0)), int(math.floor(p["y"] / 50.0)))
+                if sec_tree[sec] >= TREE_SECTOR:
+                    dropped[p["kind"]] += 1
+                    continue
+                sec_tree[sec] += 1
             for b in blocks:
                 blk_sta[b] += 1
         keep.append(p)
     if verbose:
         print("budget: kept", len(keep), "of", len(props), "dropped", dict(dropped),
-              "max dyn/block", max(blk_dyn.values(), default=0), "max static/block", max(blk_sta.values(), default=0))
+              "max dyn/3x3", max(blk_dyn.values(), default=0), "max static/3x3", max(blk_sta.values(), default=0))
     return keep
 
 

@@ -5,7 +5,7 @@ roads get car paths, so parked cars never block traffic).
 Engine facts (gta-reversed CarGenerator.cpp / TheCarGenerators.cpp / FileLoader.cpp):
   * 500 generators at most (CTheCarGenerators::CarGeneratorArray); binary stream IPLs create
     theirs when the cell loads and remove them when it unloads (CIplStore::RemoveIpl) -> budget
-    per 2 x 2 block of cells;
+    per 3 x 3 window of cells (a stream IPL stays loaded within 350 units of its instances);
   * file angle in radians, the car's forward (+y) axis is rotated by it (0 = north);
   * a car appears when the player is 140..160 units away; the ground is found with a vertical
     line from z + 1 downwards -> z = ground + 1;
@@ -29,7 +29,7 @@ from tools.gta.ipl import CarGen
 CELL = 500.0
 NC = int(2 * WORLD / CELL)
 PER_CELL = 100
-PER_BLOCK = 420
+PER_WINDOW = 440                  # generators per 3x3 window of 500-unit cells (array of 500)
 CAR_L, CAR_W = 4.9, 2.2
 
 
@@ -127,7 +127,7 @@ def candidates(W, blds, props, exclude=None, seed=3):
 
 
 def select(cands, W, seed=4, occupancy=0.5):
-    """Thin to an occupancy and to the generator budgets (per cell and per 2x2 block)."""
+    """Thin to an occupancy and to the generator budgets (per cell and per 3x3 window)."""
     rng = np.random.default_rng(seed)
     order = rng.permutation(len(cands))
     taken = []
@@ -146,8 +146,8 @@ def select(cands, W, seed=4, occupancy=0.5):
         cy = min(NC - 1, max(0, int((y + WORLD) // CELL)))
         if cell_n[(cx, cy)] >= PER_CELL:
             continue
-        blocks = [(bx, by) for bx in (cx - 1, cx) for by in (cy - 1, cy)]
-        if any(blk_n[b] >= PER_BLOCK for b in blocks):
+        blocks = [(bx, by) for bx in (cx - 1, cx, cx + 1) for by in (cy - 1, cy, cy + 1)]   # window centres
+        if any(blk_n[b] >= PER_WINDOW for b in blocks):
             continue
         cell_n[(cx, cy)] += 1
         for b in blocks:
