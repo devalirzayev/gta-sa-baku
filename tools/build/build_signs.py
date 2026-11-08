@@ -38,7 +38,7 @@ def main(verbose=True):
         meta["road_signs"].append({"name": name, "id": mid, "txd": SG.RSIGN_TXD, "dd": RSIGN_DD})
     open(os.path.join(OUT, SG.RSIGN_TXD + ".txd"), "wb").write(txd_bytes)
     with open(os.path.join(OUT, "object_dat_add.txt"), "w", newline="\r\n") as f:
-        f.write("; Baku road signs (same parameters as bussign1)\n")
+        f.write("; Baku road signs (same parameters as noparkingsign1)\n")
         for line in SG.object_dat_lines():
             f.write(line + "\n")
     # per-tile signage

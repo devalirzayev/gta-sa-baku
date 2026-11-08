@@ -42,10 +42,10 @@ def test_bounds_only_col():
     assert np.allclose(r["min"], (-250, -250, -5)) and np.allclose(r["max"], (250, 250, 40))
 
 
-def test_object_dat_lines_match_bussign1():
+def test_object_dat_lines_match_noparkingsign1():
     from tools.build import signs
-    vanilla = ("bussign1,\t\t30.0,\t\t50.0   \t\t0.99,\t\t0.05,\t\t50.0,\t\t100.0,  1.0,\t200,\t1,\t1,\t0,\t0,\t0.0, 0.0, 0.0,"
-               "\t\tnone\t\t\t115.0, \t0.0, \t0.0, \t0.1, \t0.07,\t1,\t0")
+    vanilla = ("noparkingsign1,\t\t30.0,\t\t50.0   \t\t0.99,\t\t0.05,\t\t50.0,\t\t100.0,  1.0,\t0,\t1,\t1,\t0,\t0,\t0.0, 0.0, 0.0,"
+               "\t\tnone")
 
     def fields(line):
         # CFileLoader::LoadLine turns ',' into ' '; CObjectData::Initialise sscanf's the rest

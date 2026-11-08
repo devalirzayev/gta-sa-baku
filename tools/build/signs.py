@@ -1,9 +1,9 @@
 """Baku signage.
 
 1. Road signs (Azerbaijani, Vienna convention): one small model per sign type sharing the TXD
-   bk_rsign.  They are breakable like the vanilla street signs: object.dat gets lines with the exact
-   parameters of vanilla 'bussign1' (identical lines share one CObjectData slot), so they become
-   CDummyObjects and count against the same budgets as the other dynamic props (props.py).
+   bk_rsign.  They can be knocked over like the vanilla street signs: object.dat gets lines with
+   the exact parameters of vanilla 'noparkingsign1' (identical lines share one CObjectData slot),
+   so they become CDummyObjects and count against the same budgets as the other dynamic props.
    Model axes follow the vanilla convention measured for traffic lights: the plate faces -y, i.e.
    a sign with heading h controls traffic driving along its +y axis.  Pivot at mid height (as
    vanilla bussign1), so instance z = ground + H/2.
@@ -64,9 +64,12 @@ ROAD_SIGNS = {k: RoadSign(f"bk_rs_{k}", RSIGN_BASE + i, face, shape, size, h)
               for i, (k, face, shape, size, h) in enumerate(_SPECS)}
 SIGN_IDS = {s.id: s for s in ROAD_SIGNS.values()}
 
-# object.dat: identical to vanilla bussign1 -> breakable, bends like a lamp post, shares its info slot
-OBJECT_DAT_PARAMS = ("30.0,\t\t50.0   \t\t0.99,\t\t0.05,\t\t50.0,\t\t100.0,  1.0,\t200,\t1,\t1,\t0,\t0,\t0.0, 0.0, 0.0,"
-                     "\t\tnone\t\t\t115.0, \t0.0, \t0.0, \t0.1, \t0.07,\t1,\t0")
+# object.dat: identical to vanilla 'noparkingsign1' (damage effect 0, lamp-post collision response):
+# the sign is knocked over when hit.  Effect 200 (breakable) would need a Breakable plugin in the
+# DFF; without it BreakObject_c::Init fails and the object just disappears (Object.cpp).
+# Identical parameter lines share one CObjectData slot.
+OBJECT_DAT_PARAMS = ("30.0,\t\t50.0   \t\t0.99,\t\t0.05,\t\t50.0,\t\t100.0,  1.0,\t0,\t1,\t1,\t0,\t0,\t0.0, 0.0, 0.0,"
+                     "\t\tnone")
 
 
 def object_dat_lines():
