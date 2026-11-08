@@ -19,6 +19,10 @@ from tools.rw import img, dff, col, txd
 from tools.gta import ipl as IPL, water as WT, zones as ZN, paths as PT
 
 ERR, WARN = [], []
+# kept vanilla text IPLs (package.KEEP_IPL), counted from the vanilla files: int_veg 42, int_cont 8,
+# gen_int1 206, stadint 76, levelmap 53 instances; the other kept interior IPLs have none
+VANILLA_KEPT_TEXT_INST = 385
+VANILLA_KEPT_TEXT_IPLS_WITH_INST = 5
 
 
 def err(m):
@@ -193,12 +197,9 @@ def main(dist="dist/Baku_SA"):
                     dyn_ids.add(by_name[nm])
     n_text_dyn = sum(1 for v in text_inst.values() for i in v if i.model_id in dyn_ids)
     stream_counts = {}
-    CELL, NC = 500.0, 12
-    blk_sta = np.zeros((NC, NC), int)
-    blk_dyn = np.zeros((NC, NC), int)
     dyn_xy = []
     stream_by_grp = {}
-    blk_car = np.zeros((12, 12), int)
+    stream_files = {}
     for fn in os.listdir(G):
         if not fn.endswith(".ipl"):
             continue
@@ -214,15 +215,11 @@ def main(dist="dist/Baku_SA"):
             if abs(i.x) > 3000 or abs(i.y) > 3000:
                 err(f"{fn}: instance outside world")
                 continue
-            cx = min(NC - 1, int((i.x + 3000) // CELL))
-            cy = min(NC - 1, int((i.y + 3000) // CELL))
             if i.model_id in dyn_ids:
-                blk_dyn[cx, cy] += 1
                 dyn_xy.append((i.x, i.y))
-            else:
-                blk_sta[cx, cy] += 1
         stream_counts[stem] = len(insts)
         stream_by_grp.setdefault(grp, []).extend(insts)
+        stream_files[stem] = (insts, cars)
         for c in cars:
             if abs(c.x) > 2995 or abs(c.y) > 2995:
                 err(f"{fn}: car generator outside the world")
@@ -231,7 +228,6 @@ def main(dist="dist/Baku_SA"):
                 err(f"{fn}: car generator angle {c.angle} is not in radians")
             if c.model_id != -1 and not (400 <= c.model_id <= 611):
                 err(f"{fn}: car generator model {c.model_id}")
-            blk_car[min(NC - 1, int((c.x + 3000) // CELL)), min(NC - 1, int((c.y + 3000) // CELL))] += 1
         if len(stem) > 17:
             err(f"IPL slot name too long {stem}")
     # collision model available for every placed instance (own entry, or a LOD with exactly one child)
@@ -262,43 +258,161 @@ def main(dist="dist/Baku_SA"):
                 nocol[id_name.get(i.model_id, str(i.model_id))] += 1
     for nm, n in nocol.most_common(20):
         err(f"model {nm} placed {n}x without a collision model (crash in CWorld::Add)")
-    # a player can be inside the (200-unit inflated) bounding boxes of at most a 2x2 block of cells
-    def block_max(a):
-        return max(int(a[i:i + 2, j:j + 2].sum()) for i in range(NC - 1) for j in range(NC - 1))
-    peak = block_max(blk_sta)
-    peak_car = block_max(blk_car)
-    print(f"car generators: {int(blk_car.sum())} streamed, densest 2x2 block {peak_car}/500 (CTheCarGenerators array)")
-    if peak_car > 480:
-        err(f"{peak_car} car generators in a 2x2 block of cells (array of 500)")
-    peak_dyn = block_max(blk_dyn)
-    est_pool = n_text - n_text_dyn + peak + 1500      # + vanilla interior text IPLs (estimate)
+    # LinkLods: a LOD with several children keeps no collision and unlinks children that do not own
+    # their col model (FileLoader.cpp 0x5B5293) -> one child per LOD
+    multi = [(s, k, n) for (s, k), n in children.items() if n > 1]
+    for s, k, n in multi[:10]:
+        err(f"{s}.ipl: LOD #{k} has {n} children (LinkLods needs exactly one)")
+    # LoadScene keeps the text instances + every LOD-linked stream instance of its related IPLs in
+    # gpLoadedBuildings[4096] (FileLoader.cpp 0x5B5180, IplStore.cpp SetupRelatedIpls)
+    for stem, insts in text_inst.items():
+        n_rel = sum(1 for i in stream_by_grp.get(stem, []) if i.lod >= 0)
+        if len(insts) + n_rel > 4096:
+            err(f"{stem}.ipl: {len(insts)} instances + {n_rel} LOD-linked stream instances > gpLoadedBuildings[4096]")
+    # every text IPL with instances takes one of IplEntityIndexArrays[40] (CIplStore::GetNewIplEntityIndexArray)
+    n_arrays = sum(1 for v in text_inst.values() if v) + VANILLA_KEPT_TEXT_IPLS_WITH_INST
+    print(f"text IPLs with instances: {n_arrays}/40 IplEntityIndexArrays")
+    if n_arrays > 40:
+        err(f"{n_arrays} text IPLs with instances > IplEntityIndexArrays[40]")
+
+    # ------------------------------------------------------------ streaming: what is loaded at once
+    mrow = models.set_index("id")
+
+    def aabb(mid):
+        nm = id_name.get(mid, "")
+        if nm in col_models:
+            m = col_models[nm][1]
+            return m["min"], m["max"]
+        if mid in mrow.index and not pd.isna(mrow.at[mid, "aabb_min_x"]):
+            r = mrow.loc[mid]
+            return ((r.aabb_min_x, r.aabb_min_y, r.aabb_min_z), (r.aabb_max_x, r.aabb_max_y, r.aabb_max_z))
+        return (-5.0, -5.0, -5.0), (5.0, 5.0, 5.0)
+
+    def ddist(mid):
+        if mid in defs:
+            return defs[mid][2]
+        return float(mrow.at[mid, "draw_distance"]) if mid in mrow.index else 100.0
+
+    def is_big(insts, lod_children=None):
+        # LinkLods: SetupBigBuilding when the entity has LOD children or draw distance > 300
+        # (m_fLODDistMultiplier is 1 while the level loads)
+        out = np.array([ddist(i.model_id) > 300.0 for i in insts], bool)
+        if lod_children is not None:
+            out |= lod_children
+        return out
+
+    def single_nodes(insts, rects, big):
+        sta = np.array([i.model_id not in dyn_ids for i in insts], bool)
+        n_norm = _sectors(rects[sta & ~big]).sum()
+        n_big = _sectors(rects[sta & big], size=200.0, n=30).sum()
+        return int(n_norm + n_big)
+
+    ipl_stats = {}
+    for stem, (insts, cars) in stream_files.items():
+        if not insts and not cars:
+            continue
+        rects = _bound_rects(insts, aabb)
+        if len(rects):
+            bb = [rects[:, 0].min(), rects[:, 1].min(), rects[:, 2].max(), rects[:, 3].max()]
+        else:
+            xy = np.array([(c.x, c.y) for c in cars])
+            bb = [*xy.min(0), *xy.max(0)]
+        large = any(ddist(i.model_id) > 150.0 for i in insts)
+        g = 350.0 if large else 200.0
+        bb = (bb[0] - g, bb[1] - g, bb[2] + g, bb[3] + g)
+        dyn = np.array([i.model_id in dyn_ids for i in insts], bool)
+        big = is_big(insts)
+        ipl_stats[stem] = (bb, {"static": int((~dyn).sum()), "dynamic": int(dyn.sum()),
+                                "dyn_nodes": int(_sectors(rects[dyn]).sum()) if len(rects) else 0,
+                                "single": single_nodes(insts, rects, big) if len(rects) else 0,
+                                "cars": len(cars)})
+    peaks = stream_load_peaks(ipl_stats)
+    pk = {k: v[0] for k, v in peaks.items()}
+    ncell = len(peaks.get("static", (0, 0, []))[2])
+    print(f"streaming: up to {ncell} stream IPLs loaded at once (bounding boxes +350/+200)")
+    # permanent text instances (ours + the kept vanilla interior / levelmap IPLs)
+    text_static = n_text - n_text_dyn + VANILLA_KEPT_TEXT_INST
+    pool = text_static + pk.get("static", 0)
     print(f"IPL: {n_text} text instances, {sum(stream_counts.values())} streamed in {len(stream_counts)} binary IPLs; "
-          f"densest 2x2 block {peak} static -> building pool estimate {est_pool}/13000")
-    if est_pool > 12000:
-        err(f"building pool estimate {est_pool} too close to 13000")
-    # dynamic (object.dat) instances -> CDummyObject: dummy pool 2500, double-link nodes 3200 (shared),
-    # CObject within 80 units (object pool 350). Vanilla: 1537 per block, 144 within 100 units.
-    est_dummy = n_text_dyn + peak_dyn + 60
+          f"peak {pk.get('static', 0)} streamed static -> building pool {pool}/13000")
+    if pool > 12000:
+        err(f"building pool {pool} too close to 13000 at {peaks['static'][1]}")
+    # dynamic (object.dat) instances -> CDummyObject: dummy pool 2500; double-link sector nodes 3200
+    # shared with the vehicle / ped / object repeat sectors; CObjects within 80 units: object pool 350
+    text_dyn_nodes = sum(int(_sectors(_bound_rects([i for i in v if i.model_id in dyn_ids], aabb)).sum())
+                         for v in text_inst.values())
+    dummies = n_text_dyn + pk.get("dynamic", 0) + 60
+    dbl = text_dyn_nodes + pk.get("dyn_nodes", 0) + 60 + 700
     near = 0
     if dyn_xy:
         from scipy.spatial import cKDTree
         t = cKDTree(np.array(dyn_xy))
         gpts = np.mgrid[-3000:3000:20, -3000:3000:20].reshape(2, -1).T
         near = int(max(len(x) for x in t.query_ball_point(gpts, 100.0)))
-    print(f"dynamic objects: {len(dyn_xy)} streamed, densest block {peak_dyn} -> dummy estimate {est_dummy}/2500, "
-          f"double-link estimate {int(est_dummy * 1.25 + 700)}/3200; max within 100 units {near} (object pool 350)")
-    if est_dummy > 2000 or est_dummy * 1.25 + 700 > 3000:
-        err(f"dynamic object density too high ({est_dummy} dummies in the densest block)")
+    print(f"dynamic objects: {len(dyn_xy)} streamed, peak {pk.get('dynamic', 0)} loaded -> dummy pool {dummies}/2500, "
+          f"double-link nodes {dbl}/3200 (incl. 700 for vehicles/peds/objects); max within 100 units {near} "
+          f"(object pool 350)")
+    if dummies > 2300:
+        err(f"dummy pool {dummies} too close to 2500 at {peaks['dynamic'][1]}")
+    if dbl > 3050:
+        err(f"double-link nodes {dbl} too close to 3200 at {peaks['dyn_nodes'][1]}")
     if near > 160:
         err(f"{near} dynamic objects within 100 units (vanilla max 144)")
-    # single-link sector nodes (70000): ground tiles span ~6x6 50-unit sectors, BIG/LOD entities use 200-unit sectors
-    n_tiles = sum(1 for i in text_inst.get("baku", []) if i.lod >= 0)
-    n_lodt = len(text_inst.get("baku", [])) - n_tiles
-    n_blod = n_text - len(text_inst.get("baku", []))
-    est_single = 42 * n_tiles + 12 * n_lodt + 2 * n_blod + int(1.4 * peak) + 1000
-    print(f"single-link sector nodes estimate {est_single}/70000")
-    if est_single > 60000:
-        err(f"single-link node estimate {est_single} too close to 70000")
+    print(f"car generators: {sum(len(c) for _, c in stream_files.values())} streamed, peak {pk.get('cars', 0)} "
+          f"loaded/500 (CTheCarGenerators array)")
+    if pk.get("cars", 0) > 480:
+        err(f"{pk['cars']} car generators loaded at once at {peaks['cars'][1]} (array of 500)")
+    # single-link sector nodes (70000): every building in each 50-unit sector its bound rect touches,
+    # BIG buildings in the 200-unit LOD sectors
+    text_single = VANILLA_KEPT_TEXT_INST
+    for stem, insts in text_inst.items():
+        if insts:
+            lc = np.zeros(len(insts), bool)
+            for (s, k), n in children.items():
+                if s == stem and n and 0 <= k < len(lc):
+                    lc[k] = True
+            text_single += single_nodes(insts, _bound_rects(insts, aabb), is_big(insts, lc))
+    single = text_single + pk.get("single", 0)
+    print(f"single-link sector nodes {single}/70000")
+    if single > 60000:
+        err(f"single-link nodes {single} too close to 70000")
+    # collision density (CCollision::ProcessColModels collTrisB[600])
+    # Vehicles reach a bounding radius of ~8 (buses, trucks), the cheat planes ~12: hard limit at
+    # 12 units, warning at 20 (big planes). Fast 2D over-estimate first, exact count when high.
+    worst = {12.0: (0, ""), 20.0: (0, "")}
+    for nm, (fn, m) in col_models.items():
+        if col_tri_peak(m, radius=20.0) < 450:
+            continue
+        for r in (12.0, 20.0):
+            n = col_tri_peak_exact(m, r)
+            if n > worst[r][0]:
+                worst[r] = (n, nm)
+            if r == 12.0 and n > 560:
+                err(f"{nm}: {n} collision triangles within {r:.0f} units of a point (collTrisB[600])")
+            elif r == 20.0 and n > 560:
+                warn(f"{nm}: {n} collision triangles within {r:.0f} units of a point (big planes, collTrisB[600])")
+    print(f"collision: at most {worst[12.0][0]} triangles within 12 units of a point ({worst[12.0][1]}), "
+          f"{worst[20.0][0]} within 20 ({worst[20.0][1]})")
+    # visible entity lists (CRenderer ms_aVisibleEntityPtrs / ms_aVisibleLodPtrs, 1000 each, no
+    # bounds check in the release game) at the maximum draw distance setting (LOD multiplier 1.8)
+    # and a 90 degree horizontal field of view; vanilla peaks at 259 / 642 with the same measure
+    hd, lods = [], []
+    for stem, insts in text_inst.items():
+        for k, i in enumerate(insts):
+            (lods if children[(stem, k)] else hd).append((i.x, i.y, ddist(i.model_id)))
+    for insts, _ in stream_files.values():
+        hd += [(i.x, i.y, ddist(i.model_id)) for i in insts]
+    hd, lods = np.array(hd).reshape(-1, 3), np.array(lods).reshape(-1, 3)
+    vis = visible_peak(hd[:, :2], np.minimum(hd[:, 2] * 1.8, 2000.0))
+    vis_l = visible_peak(lods[:, :2], np.minimum(lods[:, 2] * 1.8, 1500.0), step=100.0)
+    print(f"visible entities: up to {vis[0]} map entities (+ vehicles / peds) at {vis[1]}, "
+          f"{vis_l[0]} LODs (lists of 1000)")
+    if vis[0] > 820:
+        err(f"{vis[0]} map entities visible at once at {vis[1]} heading {vis[2]} (ms_aVisibleEntityPtrs[1000])")
+    elif vis[0] > 650:
+        warn(f"{vis[0]} map entities visible at once at {vis[1]} heading {vis[2]}")
+    if vis_l[0] > 850:
+        err(f"{vis_l[0]} LODs visible at once at {vis_l[1]} (ms_aVisibleLodPtrs[1000])")
     # ------------------------------------------------------------ water, zones, paths, scm, radar
     st = WT.validate_water(WT.parse_water_dat(open(os.path.join(F, "data", "water.dat")).read()))
     print("water:", WT.summary(st))
@@ -308,6 +422,23 @@ def main(dist="dist/Baku_SA"):
     areas = PT.read_area_files(G)
     res = PT.validate_areas(areas, strict=True)
     print("paths:", res if not isinstance(res, tuple) else res[:2])
+    # CTrain::InitTrains reads data\paths\tracks*.dat (and again after every save load)
+    from tools.gta import tracks as TR
+    for k, name in TR.TRACK_FILES.items():
+        fn = os.path.join(F, "data", "paths", name)
+        if not os.path.exists(fn):
+            err(f"data/paths/{name} missing (vanilla trains would run through Baku)")
+            continue
+        raw = open(fn, "rb").read()
+        if len(raw) > TR.BUFFER_SIZE:
+            err(f"{name}: {len(raw)} bytes > the {TR.BUFFER_SIZE} byte read buffer")
+        try:
+            nodes = TR.parse_tracks_dat(raw.decode("ascii"))
+            TR.validate_track(nodes, track=k)
+            if any(abs(n.x) < 3000 and abs(n.y) < 3000 for n in nodes):
+                warn(f"{name}: track nodes inside the world")
+        except Exception as e:      # TrackError or a parse error
+            err(f"{name}: {e}")
     radars = [f for f in os.listdir(G) if re.fullmatch(r"radar\d+\.txd", f)]
     if len(radars) != 144:
         err(f"{len(radars)} radar txds")
@@ -323,6 +454,170 @@ def main(dist="dist/Baku_SA"):
     for w in WARN[:30]:
         print("warn ", w)
     return 1 if ERR else 0
+
+
+def _bound_rects(insts, aabb):
+    """CEntity::GetBoundRect (Entity.cpp 0x534120): the four xy corners of the model's col
+    bounding box, transformed by the instance matrix. insts: list of IPL.Inst; aabb(model_id)
+    -> (min3, max3). Returns (n, 4) [x0, y0, x1, y1]."""
+    if not insts:
+        return np.zeros((0, 4))
+    lo = np.array([aabb(i.model_id)[0][:2] for i in insts], np.float64)
+    hi = np.array([aabb(i.model_id)[1][:2] for i in insts], np.float64)
+    q = np.array([i.q() for i in insts], np.float64)
+    pos = np.array([(i.x, i.y) for i in insts], np.float64)
+    # rotation of the IPL quaternion (the engine uses the conjugate, see props.md section 2)
+    qx, qy, qz, qw = (-q[:, 0], -q[:, 1], -q[:, 2], q[:, 3])
+    r00 = 1 - 2 * (qy * qy + qz * qz)
+    r01 = 2 * (qx * qy - qz * qw)
+    r10 = 2 * (qx * qy + qz * qw)
+    r11 = 1 - 2 * (qx * qx + qz * qz)
+    xs, ys = [], []
+    for cx, cy in ((lo[:, 0], lo[:, 1]), (hi[:, 0], hi[:, 1]), (hi[:, 0], lo[:, 1]), (lo[:, 0], hi[:, 1])):
+        xs.append(pos[:, 0] + r00 * cx + r01 * cy)
+        ys.append(pos[:, 1] + r10 * cx + r11 * cy)
+    xs, ys = np.array(xs), np.array(ys)
+    return np.c_[xs.min(0), ys.min(0), xs.max(0), ys.max(0)]
+
+
+def _sectors(rects, size=50.0, n=120):
+    """Number of world sectors (CWorld::GetSectorX/Y, 50 units, clamped to the 120x120 grid)
+    an entity with this bound rect is linked into (CEntity::Add)."""
+    if len(rects) == 0:
+        return np.zeros(0, int)
+    r = np.clip(rects, -3000.0, 2999.0)
+    sx0 = np.clip(np.floor(r[:, 0] / size + n / 2), 0, n - 1)
+    sy0 = np.clip(np.floor(r[:, 1] / size + n / 2), 0, n - 1)
+    sx1 = np.clip(np.floor(r[:, 2] / size + n / 2), 0, n - 1)
+    sy1 = np.clip(np.floor(r[:, 3] / size + n / 2), 0, n - 1)
+    return ((sx1 - sx0 + 1) * (sy1 - sy0 + 1)).astype(int)
+
+
+def stream_load_peaks(ipl_stats):
+    """Exterior stream IPLs are loaded while the player is inside their bounding box (union of
+    the instances' bound rects, inflated by 350 when one model has a draw distance > 150, else
+    200: CIplStore::LoadIpl / LoadIplBoundingBox, SetIfInteriorIplIsRequired, LoadIpls).
+    ipl_stats: {name: (bb (x0, y0, x1, y1) inflated, {counter: value})}. Returns
+    {counter: (peak, (x, y), names)} over every player position: the maximum of a sum of
+    closed-rectangle indicators is reached at a (left edge, bottom edge) pair."""
+    if not ipl_stats:
+        return {}
+    names = list(ipl_stats)
+    bbs = np.array([ipl_stats[n][0] for n in names])
+    keys = sorted({k for n in names for k in ipl_stats[n][1]})
+    vals = np.array([[ipl_stats[n][1].get(k, 0) for k in keys] for n in names], np.float64)
+    xs = np.unique(np.clip(bbs[:, 0], -3000, 3000))
+    ys = np.unique(np.clip(bbs[:, 1], -3000, 3000))
+    inx = (bbs[:, 0][:, None] <= xs[None, :]) & (xs[None, :] <= bbs[:, 2][:, None])     # (ipl, x)
+    iny = (bbs[:, 1][:, None] <= ys[None, :]) & (ys[None, :] <= bbs[:, 3][:, None])     # (ipl, y)
+    out = {}
+    for k, key in enumerate(keys):
+        tot = np.einsum("i,ix,iy->xy", vals[:, k], inx.astype(np.float64), iny.astype(np.float64))
+        a, b = np.unravel_index(int(np.argmax(tot)), tot.shape)
+        loaded = [names[i] for i in np.nonzero(inx[:, a] & iny[:, b])[0]]
+        out[key] = (int(round(tot[a, b])), (float(xs[a]), float(ys[b])), loaded)
+    return out
+
+
+def col_tri_peak(rec, radius=20.0, step=2.0):
+    """Most triangles of one collision model that can touch a sphere of `radius` (2D bounding
+    box overlap, an over-estimate of TestSphereTriangle). CCollision::ProcessColModels collects
+    them in static collTrisB[600]; with face groups the inner `break` does not stop the next
+    group from writing past the array."""
+    V, Fc = rec.get("vertices"), rec.get("faces")
+    if V is None or Fc is None or len(Fc) == 0:
+        return 0
+    tri = V[Fc][:, :, :2]
+    lo = tri.min(1) - radius
+    hi = tri.max(1) + radius
+    o = lo.min(0)
+    n = np.ceil((hi.max(0) - o) / step).astype(int) + 2
+    acc = np.zeros((n[0] + 1, n[1] + 1), np.int32)
+    i0 = np.floor((lo - o) / step).astype(int)
+    i1 = np.floor((hi - o) / step).astype(int) + 1
+    np.add.at(acc, (i0[:, 0], i0[:, 1]), 1)
+    np.add.at(acc, (i1[:, 0], i0[:, 1]), -1)
+    np.add.at(acc, (i0[:, 0], i1[:, 1]), -1)
+    np.add.at(acc, (i1[:, 0], i1[:, 1]), 1)
+    return int(acc.cumsum(0).cumsum(1).max())
+
+
+def visible_peak(xy, rad, step=50.0, half_fov=45.0, chunk=400):
+    """Most entities a camera can have in CRenderer's visible lists at once: entity i is drawn
+    within rad[i] (draw distance x LOD multiplier) when inside the horizontal field of view
+    (2 * half_fov; within 15 units any heading). Camera positions on a grid, headings in 5 deg
+    steps. Returns (count, (x, y), heading_deg)."""
+    from scipy.spatial import cKDTree
+    if len(xy) == 0:
+        return 0, None, None
+    tree = cKDTree(xy)
+    rmax = float(rad.max())
+    x0, y0 = xy.min(0)
+    x1, y1 = xy.max(0)
+    pts = np.array(np.meshgrid(np.arange(x0, x1 + step, step), np.arange(y0, y1 + step, step))).reshape(2, -1).T
+    k = min(72, int(round(2 * half_fov / 5.0)) + 1)
+    best = (0, None, None)
+    for c0 in range(0, len(pts), chunk):
+        P = pts[c0:c0 + chunk]
+        for p, idx in zip(P, tree.query_ball_point(P, rmax)):
+            if len(idx) <= best[0]:
+                continue
+            idx = np.asarray(idx)
+            d = xy[idx] - p
+            dist = np.hypot(d[:, 0], d[:, 1])
+            keep = dist < rad[idx]
+            if keep.sum() <= best[0]:
+                continue
+            near = dist[keep] < 15.0
+            ang = np.degrees(np.arctan2(d[keep, 1], d[keep, 0]))[~near]
+            h = np.histogram(ang, bins=72, range=(-180.0, 180.0))[0]
+            cs = np.cumsum(np.r_[0, h, h[:k]])
+            w = cs[k:k + 72] - cs[:72] + near.sum()
+            j = int(np.argmax(w))
+            if w[j] > best[0]:
+                best = (int(w[j]), (float(p[0]), float(p[1])), j * 5.0 - 180.0 + k * 2.5)
+    return best
+
+
+def _seg_dist(p, A, B):
+    d = B - A
+    t = np.clip(((p - A) * d).sum(1) / np.maximum((d * d).sum(1), 1e-12), 0.0, 1.0)
+    return np.sqrt(((A + d * t[:, None] - p) ** 2).sum(1))
+
+
+def _point_tri_dist(p, A, B, C):
+    """Distance from point p (3,) to triangles (n,3) A, B, C: the plane distance when the
+    projection falls inside the triangle, else the nearest edge."""
+    nrm = np.cross(B - A, C - A)
+    ln = np.linalg.norm(nrm, axis=1)
+    ok = ln > 1e-12
+    nrm = nrm / np.where(ok, ln, 1.0)[:, None]
+    h = ((p - A) * nrm).sum(1)
+    q = p - nrm * h[:, None]
+    inside = ok.copy()
+    for U, W in ((A, B), (B, C), (C, A)):
+        inside &= (np.cross(W - U, q - U) * nrm).sum(1) >= -1e-9
+    d = np.minimum(np.minimum(_seg_dist(p, A, B), _seg_dist(p, B, C)), _seg_dist(p, C, A))
+    return np.where(inside, np.abs(h), d)
+
+
+def col_tri_peak_exact(rec, radius, probes=1500):
+    """Most triangles within `radius` of a probe point (TestSphereTriangle), probes on the
+    surface (+1 unit) at the triangle centroids."""
+    V, Fc = rec.get("vertices"), rec.get("faces")
+    if V is None or Fc is None or len(Fc) == 0:
+        return 0
+    T = V[Fc].astype(np.float64)
+    lo, hi = T.min(1), T.max(1)
+    P = T.mean(1)[:: max(1, len(T) // probes)] + np.array([0.0, 0.0, 1.0])
+    best = 0
+    for p in P:
+        cand = np.nonzero(((lo <= p + radius) & (hi >= p - radius)).all(1))[0]
+        if len(cand) <= best:
+            continue
+        n = int((_point_tri_dist(p, T[cand, 0], T[cand, 1], T[cand, 2]) <= radius).sum())
+        best = max(best, n)
+    return best
 
 
 def _trim_rw(d: bytes) -> bytes:
