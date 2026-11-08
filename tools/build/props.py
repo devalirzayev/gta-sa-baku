@@ -488,7 +488,7 @@ def lamps(ctx):
                 elif lf[k] < -0.3:
                     continue
                 else:
-                    Q = P[k] + side * N[k] * (half + 0.75)
+                    Q = P[k] + side * N[k] * (half + 0.6)
                     if ctx.on_road(Q[None])[0] or ctx.in_building(Q[None], 0.5)[0] or ctx.in_water(Q[None])[0]:
                         continue
                     z = ctx.ground_z(*Q) + ctx.M.base(model_side)
@@ -658,7 +658,7 @@ def trees(ctx):
             continue
         s_full = profiles.arclen(e.pts)
         for side, sw, half in ((-1, r.sw_right, r.right), (+1, r.sw_left, r.left)):
-            if sw < 1.9:
+            if sw < 2.5:            # keep the pedestrian line (sw / 2 from the kerb) free on narrow sidewalks
                 continue
             if e.cls == "residential" and side > 0 and not e.oneway:
                 continue
@@ -668,7 +668,7 @@ def trees(ctx):
             P, T = _sample(r.center, s)
             N = np.c_[-T[:, 1], T[:, 0]]
             lf = np.abs(np.interp(r.s0 + s, s_full, e.lift))
-            Q = P + side * N * (half + 0.8)
+            Q = P + side * N * (half + 0.55)
             keep = lf < 0.3
             for k in np.nonzero(keep)[0]:
                 if not ctx.near_placed(Q[k, 0], Q[k, 1], 4.5):

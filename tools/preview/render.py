@@ -10,7 +10,10 @@ from tools.rw import dff as rwdff
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def scene_json(models, eye, target, fov=60, fog=None, sky="#9db8d0"):
+def scene_json(models, eye, target, fov=60, fog=None, sky="#9db8d0", night=False):
+    """night=True uses the night vertex colours (DN building pipeline) and a dark sky."""
+    if night:
+        sky = "#0b1020"
     meshes = []
     for item in models:
         data, pos = item[0], item[1]
@@ -19,7 +22,8 @@ def scene_json(models, eye, target, fov=60, fog=None, sky="#9db8d0"):
         g = r["geometries"][0]
         V = g["vertices"].astype(float)
         UV = g["uvs"][0].astype(float)
-        C = g["prelit"][:, :3].astype(float) / 255.0 if "prelit" in g else None
+        key = "night" if night and "night" in g else "prelit"
+        C = g[key][:, :3].astype(float) / 255.0 if key in g else None
         for mi, mat in enumerate(g["materials"]):
             sel = g["mat_ids"] == mi
             if not sel.any():

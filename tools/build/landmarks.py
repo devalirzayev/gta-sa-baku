@@ -118,8 +118,13 @@ def _loft(mb, rings, zs, mat, uscale, vscale, night_rgb=None, surface=SURF["DEFA
             a, b, c, d = k * w + i, k * w + i + 1, (k + 1) * w + i + 1, (k + 1) * w + i
             T += [[a, b, c], [a, c, d]]
     T = np.array(T)
-    cxy = np.mean(rings[0], axis=0) if centre_xy is None else np.asarray(centre_xy)
-    # orient each quad outward from the axis through the ring centres
+    # orient each quad outward from the axis through the ring centres (each ring has its own
+    # centre: lofts may lean, like the flame towers)
+    ring_c = np.array([r.mean(0) for r in rings])
+    if centre_xy is not None and len(rings) == 2:
+        ring_c[:] = np.asarray(centre_xy)
+    quad_ring = np.repeat(np.arange(len(rings) - 1), 2 * n)
+    cxy = (ring_c[quad_ring] + ring_c[quad_ring + 1]) / 2
     cen = V[T].mean(1)
     fn = np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]])
     radial = cen[:, :2] - cxy
@@ -288,9 +293,9 @@ def build_flame(W, polys, podium):
         K = 44
         for k in range(K + 1):
             t = k / K
-            s = 1.0 if t < 0.18 else max(0.025, max(0.0, 1 - ((t - 0.18) / 0.82) ** 2.0) ** 0.75)
+            s = 1.0 if t < 0.18 else max(0.0, 1 - ((t - 0.18) / 0.82) ** 2.0) ** 0.75
             cc = c0 + inward * (1 - s) * reach * 0.9
-            rings.append(cc + (ring0 - c0) * s)
+            rings.append(cc + (ring0 - c0) * s)        # last ring collapses to the tip
             zs.append(z0 + H * t)
 
         def night(k, z, rr, H=H):
@@ -298,10 +303,10 @@ def build_flame(W, polys, podium):
             ang = np.arctan2(rr[:, 1] - rr[:, 1].mean(), rr[:, 0] - rr[:, 0].mean())
             wave = 0.5 + 0.5 * np.sin(ang * 3 + t * 9.0)
             r = 255.0
-            g = 40 + 150 * t + 50 * wave
-            b = 10 + 70 * t * t
+            g = 35 + 105 * t + 40 * wave            # red at the foot, orange-yellow tongues higher up
+            b = 8 + 28 * t * t
             return np.c_[np.full(len(rr), r), g, np.full(len(rr), b)]
-        _loft(mb, rings, zs, "lm_flame", 16.0, 25.6, night_rgb=night, surface=SURF["GLASS"], centre_xy=c0)
+        _loft(mb, rings, zs, "lm_flame", 16.0, 25.6, night_rgb=night, surface=SURF["GLASS"], centre_xy=c0, cap=False)
     # podium
     if podium is not None:
         loc = shapely.transform(podium, lambda p: p - trio)
