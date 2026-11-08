@@ -4,29 +4,34 @@
 Run (from anywhere; stdlib only):
 
     python3 -I tools/catalog/build_catalog.py [--cache DIR] [--offline] [--no-prineside]
+                                              [--report FILE] [--scan-gtarev] [--out DIR]
 
 All downloads are cached under --cache (default: the session scratchpad
-``catalog_cache`` directory, see CACHE_DEFAULT). A second run with a warm cache
-does no network traffic. Every downloaded file is treated as *data*.
+``catalog_cache`` directory, see CACHE_DEFAULT); a second run with a warm cache makes no
+requests. Every downloaded file is treated as *data* (parsed, never executed).
 
-Outputs (repository relative):
-    data/sa/gta_dat_vanilla.txt     vanilla gta.dat (verified against >=3 copies)
-    data/sa/models.csv              one row per model id defined by the vanilla
-                                    IDE files (gta.dat + default.dat)
-    data/sa/ide_summary.csv         per gta.dat IDE file: model-info slot usage, ...
-    data/sa/building_candidates.csv subset usable as Baku buildings (+ style,
-                                    ground_risk)
+Outputs (repository relative, see docs/notes/catalog.md for the column meanings):
+    data/sa/gta_dat_vanilla.txt     vanilla gta.dat (7 independent copies agree)
+    data/sa/models.csv              one row per model id defined by the vanilla IDE files
+                                    (default.dat + gta.dat): IDE data, collision bounds,
+                                    LOD pairing, vanilla placements, prineside category
+    data/sa/ide_summary.csv         per IDE file: model-info slots, LODs, placements,
+                                    building candidates, engine dependencies,
+                                    keep/drop recommendation
+    data/sa/building_candidates.csv SA models usable as Baku buildings (style, use,
+                                    ground_risk, LOD reuse, companions)
 
-Sources (pinned commits where possible; see docs/notes/catalog.md):
-    * gta.dat / default.dat: 7 independent public copies (git blob hashes checked)
+Sources (pinned commits where possible; cross-checked, see the notes):
+    * gta.dat / default.dat: 7 / 5 public copies (git blob hashes checked)
     * IDE files: gtastories/gta (primary), Sir-Teo/web-gta, gta191977649/sa_object_finder
     * text IPLs: gtastories/gta (primary), Sir-Teo/web-gta, Fernando-A-Rocha/mta-binary-ipl-to-text
     * binary (stream) IPLs converted to text: Fernando-A-Rocha/mta-binary-ipl-to-text
       (primary), gta191977649/sa_object_finder data/all (cross-check)
-    * collision bounds: Crayder/Model-Sizes-Plus modelsizes.inc (ColAndreas export)
+    * collision bounds: crayder/model-sizes-plus modelsizes.inc (ColAndreas export)
     * model names: gta-reversed eModelID.h (fastman92 enum from unmodified SA data)
-    * hardcoded model names looked up by the exe: gta-reversed ModelIndices.cpp
-    * categories / titles: dev.prineside.com category listing pages
+    * model names looked up by the exe: gta-reversed ModelIndices.cpp
+    * procobj.dat / object.dat / carmods.dat (model names used by data files)
+    * categories / titles / DFF-like sizes: dev.prineside.com category listing pages
 """
 from __future__ import annotations
 
@@ -35,10 +40,8 @@ import collections
 import csv
 import hashlib
 import html
-import io
 import json
 import math
-import os
 import re
 import sys
 import time
@@ -150,8 +153,7 @@ TEXT_IPL_SOURCES = {
     "fern": ["other_stuff/normal_ipls/" + p for p in _TEXT_IPL_REL],
 }
 
-# 190 binary IPLs inside gta3.img (= data/sa/sa_ipl_slots.txt minus "generic")
-BINARY_IPL_NAMES = None  # filled from data/sa/sa_ipl_slots.txt at run time
+# the 190 binary IPLs inside gta3.img are the names in data/sa/sa_ipl_slots.txt minus "generic"
 STREAM_IPL_SOURCES = {
     "fern": "output/{name}.ipl",
     "sof": "data/all/{name}.ipl",
@@ -633,7 +635,7 @@ def ide_source_paths(gta_path: str) -> list[tuple[str, str]]:
 
 
 def load_ides(fetch: Fetcher, ide_paths: list[str], rep: Report) -> dict[str, str]:
-    texts, n_multi = {}, 0
+    texts, n_multi, n_three = {}, 0, 0
     for gp in ide_paths:
         srcs = ide_source_paths(gp)
         if not srcs:
@@ -645,10 +647,11 @@ def load_ides(fetch: Fetcher, ide_paths: list[str], rep: Report) -> dict[str, st
             rep(f"WARNING IDE {gp}: copies differ from primary: {diff}")
         if len(versions) >= 2 and not diff:
             n_multi += 1
+            n_three += len(versions) >= 3
         texts[gp] = primary
     single = [gp for gp in ide_paths if len(ide_source_paths(gp)) < 2]
     rep(f"IDE files: {len(ide_paths)} loaded; {n_multi} identical in >=2 independent copies "
-        f"(53 in 3 copies); single-source: {', '.join(single) or '-'}")
+        f"({n_three} in 3 copies); single-source: {', '.join(single) or '-'}")
     return texts
 
 
@@ -740,7 +743,7 @@ def ipl_group(ipl_name: str) -> str:
 # --------------------------------------------------------------------------------------
 # Assemble the model table
 # --------------------------------------------------------------------------------------
-def build_models(fetch: Fetcher, rep: Report, scan_gtarev: bool = False):
+def build_models(fetch: Fetcher, rep: Report):
     gta_raw, gta_txt = load_vanilla_dat(fetch, GTA_DAT_COPIES, "gta.dat", rep)
     _, def_txt = load_vanilla_dat(fetch, DEFAULT_DAT_COPIES, "default.dat", rep)
     gta_entries = parse_dat(gta_txt)
@@ -883,10 +886,8 @@ def build_models(fetch: Fetcher, rep: Report, scan_gtarev: bool = False):
                 else:
                     bad_lod += 1
             add(inst, stem, "text", li)
-    related_count = collections.Counter()
     for nm, insts in bin_ipls.items():
         rel = next((t for t in loaded_text if nm.lower().startswith(t + "_stream")), None)
-        related_count[rel] += 1
         for inst in insts:
             lod = inst[10]
             li = None
@@ -902,7 +903,9 @@ def build_models(fetch: Fetcher, rep: Report, scan_gtarev: bool = False):
         f"{sum(len(v) for v in bin_ipls.values())} binary instances; unresolvable LOD indices: "
         f"{bad_lod}; instances of undefined model ids: {sum(unknown_ids.values())}")
 
-    lod_by_name = lambda n: n.lower().startswith("lod")
+    def lod_by_name(n):
+        return n.lower().startswith("lod")
+
     n_lod_named_targets = sum(1 for t in lod_children if t in models and lod_by_name(models[t]["name"]))
     rep(f"LOD targets: {len(lod_children)} distinct models used as LOD by vanilla placements, "
         f"{n_lod_named_targets} of them named 'lod*'")
@@ -1010,11 +1013,16 @@ def load_prineside(fetch: Fetcher, rep: Report) -> tuple[dict, dict]:
 # --scan-gtarev (code search for files containing "MODEL" -> download -> regex). Peds,
 # vehicles and weapons (default.dat IDEs) are not listed here.
 HARDCODED_OBJECT_MODEL_REFS = {
-    1: "CutsceneMgr.cpp, CutsceneObject.cpp", 300: "CutsceneMgr.cpp, TempColModels.h",
-    319: "CutsceneMgr.cpp, TempColModels.h", 384: "ClothesBuilder.cpp",
-    394: "TaskSimplePlayHandSignalAnim.cpp", 395: "TaskSimplePlayHandSignalAnim.cpp",
-    396: "TaskSimplePlayHandSignalAnim.cpp", 397: "TaskSimplePlayHandSignalAnim.cpp",
-    630: "TheCarGenerators.cpp", 1211: "Physical.cpp",
+    1: "CutsceneMgr.cpp, CutsceneObject.cpp",
+    300: "CutsceneMgr.cpp, Replay.cpp, TempColModels.h",
+    319: "CutsceneMgr.cpp, TempColModels.h",
+    384: "ClothesBuilder.cpp",
+    394: "TaskComplexPlayHandSignalAnim.cpp, TaskSimplePlayHandSignalAnim.cpp",
+    395: "TaskComplexPlayHandSignalAnim.cpp, TaskSimplePlayHandSignalAnim.cpp",
+    396: "TaskComplexPlayHandSignalAnim.cpp, TaskSimplePlayHandSignalAnim.cpp",
+    397: "TaskComplexPlayHandSignalAnim.cpp, TaskSimplePlayHandSignalAnim.cpp",
+    630: "TheCarGenerators.cpp",
+    1211: "Physical.cpp",
 }
 
 
@@ -1256,7 +1264,7 @@ def _style_and_use(m, cats, text):
             return "rowhouse/terrace", "residential", "row of low houses"
         if h >= 7 or fl > 32:
             return "low_apartment", "residential", "2-5 floors / larger footprint"
-        return "detached_house", "residential", "low"
+        return "detached_house", "residential", "low (<7 m), footprint <=32 m"
     # other / civic / unknown (towers only for residential/office/mixed use)
     if tk["church"]:
         return "church/religious", "religious", "name"
@@ -1310,6 +1318,17 @@ def ground_risk(m, cats, title):
             and h >= 19 and fl >= 40):
         score += 2
         why.append("SF hillside block (height incl. slope?)")
+    zmin = m.get("z_min")
+    if zmin is not None and h >= 8:
+        # SA models normally have the pivot at mid height (-z_min ~ h/2); a model that
+        # reaches much further below its pivot usually carries a slope/terrain skirt
+        share = -zmin / h
+        if share >= 1.0:
+            score += 2
+            why.append(f"mostly below pivot (z_min={zmin:.1f})")
+        elif share >= 0.7:
+            score += 1
+            why.append(f"deep below pivot (z_min={zmin:.1f})")
     level = "high" if score >= 4 else "medium" if score >= 2 else "low"
     return level, score, ";".join(why)
 
@@ -1445,14 +1464,14 @@ IDE_NOTES = {
     "dynamic.ide": ("keep", "pickups (health, armour, info, bribe, ...), hydrant, bins, phone booths, parking meters, cones, lamp posts, traffic lights: >50 names looked up by the exe; fire_hydrant hardcoded"),
     "dynamic2.ide": ("keep", "more street furniture/dynamic props; CJ_TRAFFIC_LIGHT3-5, train crossings, cranes looked up by name"),
     "multiobj.ide": ("keep", "generic misc objects (sea life, beach props, escalator steps, satellite dishes, pallets); ~30 names looked up by the exe"),
-    "procobj.ide": ("keep", "procedural surface objects used by data/procobj.dat (a missing name => crash when that surface appears) unless procobj.dat is replaced"),
+    "procobj.ide": ("keep", "procedural surface objects used by data/procobj.dat (a missing name => likely crash when that surface is used) unless procobj.dat is replaced"),
     "propext.ide": ("keep", "small exterior props (generators, crates, aircon, fruit crates); oyster/horseshoe collectibles"),
     "props.ide": ("drop", "interior furniture/props (vanilla placements 100% inside interiors)"),
     "props2.ide": ("drop", "interior shop/furniture props (vanilla placements ~100% inside interiors)"),
     "veh_mods.ide": ("required", "vehicle upgrades: carmods.dat lookups are not null-checked (CVehicleModelInfo::LoadVehicleUpgrades); nitro/hydraulics/stereo/wheels"),
     "txdcut.ide": ("keep", "only txdp (cutscene TXD parents); uses no model-info slots"),
-    "levelmap.ide": ("drop", "Liberty City replica (mission 'The Da Nang Thang'/Saint Mark's) in an interior"),
-    "levelxre.ide": ("optional", "mission/script props (garage doors, keypads, ATM, containers for cranes, harvester body parts, pool/basketball minigames); only needed by main.scm features"),
+    "levelmap.ide": ("drop", "Liberty City replica (mission 'Saint Mark's Bistro'), placed in an interior area"),
+    "levelxre.ide": ("keep", "mission/script props; also 19 models the exe looks up by name: para_pack (parachute backpack), kmb_atm3 (ATM), crane containers/magnets, wrecking ball, harvester body parts, pool cue ball, basketball. Keep (or copy those lines into a project IDE)"),
     "seabed.ide": ("drop", "SA ocean floor terrain"),
 }
 
@@ -1517,7 +1536,8 @@ CITY_SLOT_BUDGET = 4500  # atomic slots we allow for city IDEs in the whole-file
 
 
 def recommend(rows, cands, data, rep: Report):
-    """Fill 'recommendation'/'reason' per IDE and return a summary dict."""
+    """Fill 'recommendation'/'role_note' per IDE (greedy city-IDE choice, see notes) and
+    return a summary dict."""
     cand_by_ide = collections.defaultdict(list)
     for c in cands:
         cand_by_ide[c["ide_file"]].append(c)
@@ -1673,7 +1693,7 @@ def engine_refs(fetch: Fetcher, data, rep: Report, hardcoded: dict) -> dict:
             refs[i].add("MI")
             found += 1
     rep(f"ModelIndices.cpp MatchAllModelStrings: {len(set(x.lower() for x in mi))} names, {found} "
-        f"defined in vanilla IDEs (the rest do not exist in SA and stay -1)")
+        f"defined in vanilla IDEs (the rest do not exist in vanilla SA either)")
     for fname, names in data_file_model_names(fetch, rep).items():
         for n in names:
             for i in byname.get(n, []):

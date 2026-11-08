@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_paths_module():
+    sys.dont_write_bytecode = True        # keep the repository free of __pycache__
     spec = importlib.util.spec_from_file_location("ila_gta_paths", ROOT / "tools" / "gta" / "paths.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod          # dataclasses need the module registered

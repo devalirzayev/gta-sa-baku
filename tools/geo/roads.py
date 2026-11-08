@@ -22,8 +22,8 @@ from scipy.spatial import cKDTree
 from .proj import lonlat_to_game, WORLD
 
 LANE_AI = 5.4
-LANE_VIS = 4.8
-GUTTER = 0.6
+LANE_VIS = 5.4
+GUTTER = 0.5
 
 MAJOR = {"motorway", "trunk", "primary", "secondary", "tertiary", "residential", "unclassified"}
 MINOR = {"living_street", "service", "track", "pedestrian", "unknown"}

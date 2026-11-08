@@ -34,6 +34,12 @@ GTA3SC = os.environ.get("GTA3SC", os.path.join(REF_DIR, "gta3sc_build", "gta3sc"
 SA_JSON = os.path.join(REF_DIR, "sblib", "sa_sa.json")
 SASCM_INI = os.path.join(REF_DIR, "sbdata", "SASCM.INI")
 G3_COMMANDS = os.path.join(REF_DIR, "gta3sc", "config_gtasa_commands.xml")
+# R*'s SA source (Sergeanur/UndefinifiedGrove: main.sc, main/misc/{initial,debug,camera}.sc,
+# main/story_missions/Vegas/vcrash1.sc) -- independent evidence for argument counts
+RS_SOURCES = [os.path.join(REF_DIR, "examples", f) for f in
+              ("ug_main.sc", "ug_initial.sc", "ug_debug.sc", "ug_camera.sc", "ug_vcrash1.sc")]
+# handlers that gta-reversed has not reimplemented (only the vanilla exe code exists)
+VANILLA_ONLY = {0x0111, 0x016C, 0x016D, 0x0180, 0x01B2, 0x01B6, 0x01B7, 0x01EB, 0x04BB, 0x04E4, 0x087B}
 
 # opcode -> (gta3sc/R* name, Sanny library name, argument classes in stream order)
 # classes: int (int literal or variable), intlit, float, label, gvar, lvar, out (output
@@ -75,6 +81,7 @@ REF = {
     0x04BB: ("SET_AREA_VISIBLE", "SET_AREA_VISIBLE", ["int"]),
     0x04E4: ("REQUEST_COLLISION", "REQUEST_COLLISION", ["float", "float"]),
     0x0629: ("SET_INT_STAT", "SET_INT_STAT", ["int", "int"]),
+    0x06D7: ("SWITCH_RANDOM_TRAINS", "SWITCH_RANDOM_TRAINS", ["int"]),
     0x070D: ("BUILD_PLAYER_MODEL", "BUILD_PLAYER_MODEL", ["int"]),
     0x07AF: ("GET_PLAYER_GROUP", "GET_PLAYER_GROUP", ["int", "out"]),
     0x0860: ("SET_CHAR_AREA_VISIBLE", "SET_CHAR_AREA_VISIBLE", ["int", "int"]),
@@ -251,6 +258,36 @@ def test_aaa_option_matches_gta3sc_layout():
     d = build(aaa_stream=True)
     h = read_header_like_vanilla(d)
     assert h["num_streamed"] == 1 and h["streamed"] == [(b"AAA", 0, 8)] and h["largest_streamed"] == 0
+
+
+def read_streamed_script_data(header_entries, registered):
+    """CStreamedScripts::ReadStreamedScriptData (0x470750): for each header entry, stop once
+    streamIdx >= number of *.scm registered from the IMGs, else FindStreamedScript(name)
+    (case-insensitive) and write m_aScripts[i] -- i == -1 is an out-of-bounds write."""
+    stream_idx = 0
+    for name, _, _ in header_entries:
+        if stream_idx >= len(registered):
+            break
+        i = next((k for k, r in enumerate(registered) if r.lower() == name.decode().lower()), -1)
+        if i == -1:
+            return "m_aScripts[-1] written"
+        stream_idx += 1
+    return "ok"
+
+
+def test_any_script_img_is_harmless():
+    # names registered by CStreaming::LoadCdDirectory from script.img (*.scm, extension cut)
+    vanilla = ["aaa", "player_parachute", "parachute", "bcesar2", "slot_machine", "hotdog"]
+    modded = ["parachute", "mycleo"]
+    for img in (vanilla, modded, []):
+        h = read_header_like_vanilla(build())
+        assert read_streamed_script_data(h["streamed"], img) == "ok"
+    # the optional AAA entry is only safe with a script.img that contains aaa.scm
+    h = read_header_like_vanilla(build(aaa_stream=True))
+    assert read_streamed_script_data(h["streamed"], vanilla) == "ok"
+    assert read_streamed_script_data(h["streamed"], modded) != "ok"
+    # default build starts like the retail main.scm (same 43 800-byte global space)
+    assert build()[:8] == bytes.fromhex("02000120ab000073")
 
 
 def test_globals_layout():
@@ -509,6 +546,30 @@ def test_against_gta3sc_commands_xml():
                 assert a.get("AllowConst") == "false", (name, k)
             if k == "intlit":
                 assert a.get("AllowGlobalVar") == "false" and a.get("AllowLocalVar") == "false"
+
+
+def test_against_rockstar_source_arity():
+    """Every R* command we emit is used by R*'s own SA scripts with the same argument count
+    (independent of the community databases, which partly derive from each other)."""
+    files = [f for f in RS_SOURCES if os.path.exists(f)]
+    if not files:
+        raise SkipTest("R* script sources not available")
+    by_name = {name: (op, len(classes)) for op, (name, _, classes) in REF.items()}
+    seen = {}
+    for path in files:
+        with open(path, encoding="latin-1") as f:
+            text = re.sub(r"/\*.*?\*/", " ", f.read(), flags=re.S)
+        for line in text.splitlines():
+            toks = line.split("//")[0].replace(",", " ").split()
+            while toks and toks[0] in ("IF", "AND", "OR", "NOT", "WHILE", "IFNOT", "WHILENOT"):
+                toks = toks[1:]
+            if toks and toks[0] in by_name:
+                seen.setdefault(toks[0], set()).add(len(toks) - 1)
+    for name, counts in seen.items():
+        assert counts == {by_name[name][1]}, (name, counts, by_name[name][1])
+    missing = {REF[op][0] for op in VANILLA_ONLY} - set(seen)
+    if len(files) == len(RS_SOURCES):
+        assert not missing, missing
 
 
 # --------------------------------------------------------------------------------------

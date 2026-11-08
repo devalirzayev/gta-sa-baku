@@ -208,8 +208,14 @@ Kinds: **int** = int literal (04/05/01) or int variable; **int-lit** = literal o
 **out** = variable receiving a result; **label** = 01 + absolute offset; **TEXT_LABEL** = 09;
 **STRING** = 0E. Every row was checked (tests) against sa.json (name, `num_params`, input/output
 types and sources), SASCM.INI (count) and gta3sc commands.xml (Type/Out/Allow* attributes); all
-three agree for every opcode. "GR" = handler reimplemented in gta-reversed (signature checked);
-"vanilla" = handler not reimplemented (see note at top).
+three agree for every opcode. Because those databases partly derive from each other, the
+argument counts were also checked against R*'s own SA scripts (RS `main.sc`, `initial.sc`,
+`debug.sc`, `camera.sc`, `vcrash1.sc`): every R* command we emit (34 of 40; the other 6 —
+NOP, SET_VAR_INT, SET_LVAR_INT, IS_INT_LVAR_GREATER_THAN_NUMBER, ANDOR, GOTO_IF_FALSE — are
+what the compiler generates for `x = 0`, `IF`, … and are reimplemented in GR) is used there with
+exactly our argument count, including all eleven "vanilla" ones.
+"GR" = handler reimplemented in gta-reversed (signature checked); "vanilla" = handler not
+reimplemented (see note at top).
 
 | Op | R* name (Sanny syntax) | Params | Handler / semantics |
 |---|---|---|---|
@@ -382,7 +388,12 @@ A hex/disassembly listing of a sample build is easiest to get with
   player control.
 * Opcode tables vs live `sa.json` (names, counts, input/output types and sources, condition
   flags, none "unsupported"), `SASCM.INI` (counts) and gta3sc `commands.xml` (types, Out,
-  AllowConst/AllowGlobalVar/AllowLocalVar).
+  AllowConst/AllowGlobalVar/AllowLocalVar), and argument counts vs R*'s own `.sc` sources.
+* `CStreamedScripts::ReadStreamedScriptData` simulated against a vanilla-like, a modded
+  (no aaa.scm) and an empty script.img: the default header is safe with all three; the optional
+  `AAA` entry is only safe with a script.img that contains aaa.scm.
+* Mutation checks (manual): wrong arity in the reference table, int-typed float parameter,
+  corrupted segment id — each is caught.
 * gta3sc (built from source) **decompiles** our file with its own header parser and command DB:
   identical instruction sequence, arguments and label targets.
 * gta3sc **compiles** a GTA3script transcription of our instruction stream (globals declared
@@ -393,8 +404,9 @@ A hex/disassembly listing of a sample build is easiest to get with
 ## 7. Open risks / uncertainties
 
 * No in-game test. The vanilla-only handlers (0111, 016C, 016D, 0180, 01B2, 01B6, 01B7, 01EB,
-  04BB, 04E4, 087B) are verified for count/types by three independent databases and R*'s own
-  usage, and their logic by the VC decompilation, but not by SA code.
+  04BB, 04E4, 087B) are verified for count/types by three community databases and R*'s own
+  usage, and their logic (except SA-only 087B and the SA `townId` argument of 016C/016D) by the
+  VC decompilation, but not by SA code.
 * `087B` string buffer size is unknown (we stay ≤ 15 chars; R* uses ≤ 14).
 * Vanilla savegames must not be loaded with our main.scm (§1.4); we offer no saving.
 * Restart/spawn z must be the real ground height of our map; if the player ends up below

@@ -157,6 +157,7 @@ OPCODES: dict[int, OpDef] = {
     0x04BB: _op("SET_AREA_VISIBLE", "i"),
     0x04E4: _op("REQUEST_COLLISION", "f f"),
     0x0629: _op("SET_INT_STAT", "i i"),
+    0x06D7: _op("SWITCH_RANDOM_TRAINS", "i"),
     0x070D: _op("BUILD_PLAYER_MODEL", "i"),
     0x07AF: _op("GET_PLAYER_GROUP", "i o"),
     0x0860: _op("SET_CHAR_AREA_VISIBLE", "i i"),
@@ -696,6 +697,15 @@ def build_freeroam_scm(spawn: Sequence[float], hospitals: Sequence[Sequence[floa
                block the script.
     extras     items run once after setup, before the main loop: callables
                ``fn(asm, vars)`` or instruction tuples ``(opcode_or_name, *args)``.
+    max_wanted_level 0..6; ped_density / car_density multipliers (game default 1.0).
+    clothes    True = R*'s new-game outfit (DEFAULT_CLOTHES) + BUILD_PLAYER_MODEL, False =
+               none, or a sequence of (texture, model, body_part 0..17).
+    unlock_all_cities  SET_INT_STAT 181 4 (no forced 4-star wanted level in the old SF/LV
+               polygons, which our map covers).
+    global_space  bytes of global variable space (vanilla 43 800 keeps CLEO-style stray
+               writes to vanilla globals out of our code).
+    aaa_stream  write gta3sc/Sanny's single 'AAA' streamed-script entry (default: none, so
+               no script.img lookup ever happens).
     """
     sx, sy, sz, sh = _point(spawn, "spawn", allow_auto_z=True)
     hosp = [_point(p, "hospital") for p in hospitals]
@@ -714,8 +724,9 @@ def build_freeroam_scm(spawn: Sequence[float], hospitals: Sequence[Sequence[floa
     for v in (ped_density, car_density):
         if not (isinstance(v, (int, float)) and math.isfinite(v) and 0 <= v <= 10):
             raise ValueError("density multipliers must be finite, 0..10")
-    if not (0 <= fade_in_ms <= 60_000 and 0 <= loop_wait_ms <= 60_000):
-        raise ValueError("fade_in_ms / loop_wait_ms out of range")
+    if not (0 <= fade_in_ms <= 60_000 and 0 <= loop_wait_ms <= 60_000
+            and 0 < weapon_load_timeout_ms <= 600_000):
+        raise ValueError("fade_in_ms / loop_wait_ms / weapon_load_timeout_ms out of range")
     _check_int32(money)
 
     wlist = []
@@ -737,6 +748,9 @@ def build_freeroam_scm(spawn: Sequence[float], hospitals: Sequence[Sequence[floa
         clothes = DEFAULT_CLOTHES
     elif clothes is False or clothes is None:
         clothes = ()
+    for item in clothes:
+        if len(item) != 3 or not (isinstance(item[2], int) and 0 <= item[2] <= 17):
+            raise ValueError(f"clothes entry must be (texture, model, body_part 0..17): {item!r}")
 
     a = ScmAssembler(global_space)
     v = FreeroamVars(a.gvar("PLAYER_CHAR", GV_PLAYER_CHAR), a.gvar("PLAYER_ACTOR", GV_PLAYER_ACTOR),
@@ -777,8 +791,8 @@ def build_freeroam_scm(spawn: Sequence[float], hospitals: Sequence[Sequence[floa
         a.emit("ADD_POLICE_RESTART", x, y, z, h, 0)
     a.emit("SET_PED_DENSITY_MULTIPLIER", float(ped_density))
     a.emit("SET_CAR_DENSITY_MULTIPLIER", float(car_density))
-    for tex, model, part in clothes:
-        a.emit("GIVE_PLAYER_CLOTHES_OUTSIDE_SHOP", v.player, tex, model, part)
+    for tex, cmodel, part in clothes:     # eClothesTexturePart: 0 torso, 1 head, 2 legs, 3 shoes
+        a.emit("GIVE_PLAYER_CLOTHES_OUTSIDE_SHOP", v.player, tex, cmodel, part)
     if clothes:
         a.emit("BUILD_PLAYER_MODEL", v.player)
     a.emit("RESTORE_CAMERA_JUMPCUT")

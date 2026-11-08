@@ -1,5 +1,5 @@
-__pycache__/
 *.pyc
 /build/
-/dist/
 /data/cache/
+/dist/
+__pycache__/

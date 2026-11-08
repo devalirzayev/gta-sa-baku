@@ -22,6 +22,17 @@ class MeshBuilder:
         T = np.asarray(T, np.int64)
         if len(T) == 0:
             return
+        UV = np.asarray(UV, np.float64)
+        # keep only referenced vertices
+        used, inv = np.unique(T.ravel(), return_inverse=True)
+        if len(used) < len(V):
+            V = V[used]
+            UV = UV[used]
+            if shade is not None and np.ndim(shade) > 0:
+                shade = np.asarray(shade)[used]
+            if night is not None and np.ndim(night) > 0:
+                night = np.asarray(night)[used]
+            T = inv.reshape(-1, 3)
         n = len(V)
         sh = np.ones(n) if shade is None else np.broadcast_to(np.asarray(shade, np.float64), (n,))
         day = np.clip(DAY[None, :3] * sh[:, None], 0, 255)
