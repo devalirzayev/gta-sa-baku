@@ -4,16 +4,18 @@ Total-conversion map mod for **GTA San Andreas PC (original 1.0)** that replaces
 world with Baku: Biləcəri – 9-cu mikrorayon – Dərnəgül – Nəsimi – Yasamal – 28 May –
 Heydər Əliyev Mərkəzi – Ağ Şəhər – Dənizkənarı Bulvar.
 
-![radar](docs/img/radar.png)
+![Bulvar quşbaxışı](docs/img/aerial_bulvar.jpg)
 
 | | |
 |---|---|
+| ![Bütün xəritə](docs/img/aerial_overview.jpg) | ![radar](docs/img/radar.png) |
 | ![Alov qüllələri](docs/img/preview_flame_towers_night.jpg) | ![Heydər Əliyev Mərkəzi](docs/img/preview_hac.jpg) |
 | ![Heydər məscidi](docs/img/preview_heydar_mosque.jpg) | ![Mağaza lövhələri](docs/img/preview_shop_boards.jpg) |
 
-(Previews of the custom models only; the San Andreas buildings come from the player's game and
-are not part of these renders. / Önizləmələrdə yalnız öz modellərimiz görünür; SA binaları
-oyunçunun öz oyunundan götürülür.)
+(Renders of the generated map, `tools/preview/aerial.py`. The San Andreas buildings and trees
+come from the player's game: in the aerial views they are white boxes / cones of the placed
+models' size. / Quşbaxışı şəkillərdə SA binaları və ağacları yerləşdirilmiş modellərin
+ölçüsündə ağ qutular / konuslarla göstərilib — oyunda onların yerində SA-nın öz modelləri olur.)
 
 **Yükləmə / Download:** `release/` qovluğundakı `Baku_SA.zip.001, .002 ...` hissələri
 (`JOIN_PARTS.bat` və ya 7-Zip ilə birləşdirin), sonra `Baku_SA/INSTALL.bat`.
